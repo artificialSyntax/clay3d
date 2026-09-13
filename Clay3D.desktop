@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Clay3D
+GenericName=2D/3D Paint
+Comment=Paint 3D-like hybrid 2D canvas and 3D scene editor
+Exec=python3 -m Clay3D
+Icon=Clay3D
+Terminal=false
+Categories=Graphics;2DGraphics;3DGraphics;
+StartupNotify=true
+StartupWMClass=Clay3D

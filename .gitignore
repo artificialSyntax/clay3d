@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+*.clay3d
+.idea/
+.vscode/
+*.egg-info/
+dist/
+build/
