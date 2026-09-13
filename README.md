@@ -18,7 +18,7 @@ PySide6, and a GPU with OpenGL 3.3.
 | Key | Action |
 |---|---|
 | `Ctrl+Z` | Undo |
-| `Ctrl+Y` | Redo |
+| `Ctrl+Y` / `Ctrl+Shift+Z` | Redo |
 | `Ctrl+N` | New |
 | `Ctrl+O` | Open |
 | `Ctrl+S` | Save |
@@ -29,6 +29,11 @@ PySide6, and a GPU with OpenGL 3.3.
 | `Ctrl+3` | 2D / 3D view |
 | `Ctrl+0` | Fit to window |
 | `Ctrl++` / `Ctrl+-` | Zoom |
+| `Page Up` / `Page Down` | Zoom |
+| `Home` | Reset view |
+| `Alt+arrows` | Pan |
+| `Ctrl+arrows` | Orbit (3D view) |
+| `Space` + drag | Pan |
 | `[` / `]` | Brush size |
 | `Delete` | Clear selection |
 | `Esc` | Cancel (discards text) |
@@ -36,9 +41,14 @@ PySide6, and a GPU with OpenGL 3.3.
 
 ## Files
 
-Images open and save as PNG, JPEG or BMP. Scenes save as `.clay3d` — a zip
+Images open as PNG, JPEG, BMP, WebP, GIF or TIFF, and save as PNG, JPEG, BMP,
+GIF or TIFF. Scenes save as `.clay3d` — a zip
 holding a JSON manifest beside real PNGs, so a scene file is the size of the
 picture in it. 3D objects export to OBJ, PLY, STL and glTF 2.0 - the formats the original
 enables in its own settings.
+
+While there are unsaved changes, a copy is written every minute. If Clay3D
+closes without saving, the work shows up under Menu > Open > Recovered projects.
+Custom stickers are kept between sessions.
 
 Interface icons are [Lucide](https://lucide.dev) (ISC), in `Clay3D/ui_icons/`.

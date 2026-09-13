@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from Clay3D import brushes, chrome, icons, recent, selection, settings, shapes2d, stickers
+from Clay3D import brushes, chrome, icons, recent, selection, settings, shapes2d, sticker_library, stickers
 from Clay3D.canvas2d import Canvas
 from Clay3D.io_files import IMAGE_FILTER, load_image, load_scene
 from Clay3D.document import DocumentActions, recovered_projects, recovery_dir
@@ -100,7 +100,7 @@ class EditorWindow(QMainWindow, EditingTools, DocumentActions):
         self.opacity = 1.0
         self.shape_style = "both"
         self.sticker_size = 120
-        self.custom_stickers: list[np.ndarray] = []   # Add sticker / Make sticker, in order
+        self.custom_stickers = sticker_library.load_all()   # Add sticker / Make sticker, in order
         self.magic = None               # selection.MagicCutout while magic select is open
         self.autofill_background = True  # "Lift an object out ... we'll automatically fill in the background"
         self.material_index = 0         # theme.MATERIALS, "Matte"

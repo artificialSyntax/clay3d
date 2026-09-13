@@ -10,7 +10,7 @@ import numpy as np
 from PySide6.QtCore import QPointF, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QImage, QPainter
 
-from Clay3D import brushes, icons, imagefx, selection, shapes2d
+from Clay3D import brushes, icons, imagefx, selection, shapes2d, sticker_library
 from Clay3D.canvas2d import (
     anchor_offset,
     canvas_orb_positions,
@@ -733,6 +733,7 @@ class EditingTools:
 
     def use_custom_sticker(self, pixels: np.ndarray) -> None:
         self.custom_stickers.append(pixels)
+        sticker_library.keep(pixels)
         self.set_category("Stickers")
         self.set_tool(f"sticker:custom:{len(self.custom_stickers) - 1}")
         # Preview it on the paper at once, with handles, ready to stamp.

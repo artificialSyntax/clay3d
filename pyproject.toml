@@ -1,11 +1,16 @@
 [project]
 name = "Clay3D"
-version = "0.1.0"
+version = "1.0.0"
 description = "Paint 3D-inspired 2D/3D editor for Linux"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
-dependencies = ["numpy", "pillow", "PySide6", "opencv-python-headless"]
+dependencies = [
+    "numpy>=2.4",
+    "pillow>=12.3",
+    "PySide6>=6.10",
+    "opencv-python-headless>=4.13",
+]
 
 [project.scripts]
 clay3d = "Clay3D.app:main"
