@@ -40,3 +40,5 @@ Images open and save as PNG, JPEG or BMP. Scenes save as `.clay3d` — a zip
 holding a JSON manifest beside real PNGs, so a scene file is the size of the
 picture in it. 3D objects export to OBJ, PLY, STL and glTF 2.0 - the formats the original
 enables in its own settings.
+
+Interface icons are [Lucide](https://lucide.dev) (ISC), in `Clay3D/ui_icons/`.

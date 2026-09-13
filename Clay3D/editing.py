@@ -45,6 +45,8 @@ def handles_for_box(box, reach: float) -> dict[str, tuple[float, float]]:
     }
 
 
+STICKER_SOURCE_SIZE = 512   # px; stickers render this big and scale down on the canvas
+
 # Drag modes that manipulate an existing selection rather than make one.
 _SELECTION_DRAGS = (
     "move", "Rotate",
@@ -66,6 +68,7 @@ class TextBox:
     italic: bool = False
     underline: bool = False
     align: str = "left"
+    background: tuple | None = None   # Background fill colour, or None for none
 
     def font(self) -> QFont:
         font = QFont(self.family, self.size)
@@ -88,12 +91,16 @@ class LiveShape:
     thickness: float = 8.0
     opacity: float = 1.0
     pixels: object = None
+    size: tuple[float, float] | None = None   # on-canvas size of pixels; start is the centre
     placed: bool = False
     source: str = "shape"
 
     def box(self) -> tuple[float, float, float, float]:
         if self.pixels is not None:
-            height, width = self.pixels.shape[:2]
+            if self.size is not None:
+                width, height = self.size
+            else:
+                height, width = self.pixels.shape[:2]
             cx, cy = self.start
             return (cx - width / 2, cy - height / 2, cx + width / 2, cy + height / 2)
         x0, x1 = sorted((self.start[0], self.end[0]))
@@ -119,7 +126,10 @@ class EditingTools:
         tool = self.tool
         if tool == "eyedropper":
             self.set_color(self.canvas.pixel(int(x), int(y)))
+            self.set_tool(self._before_eyedropper)
             return None
+        if tool == "select:crop":
+            return self._begin_crop_drag(x, y)
         if tool in brushes.CATALOG:
             self.push_undo()
             self.apply_paint_settings()
@@ -158,11 +168,12 @@ class EditingTools:
         if tool.startswith("sticker:"):
             return self.place_sticker(x, y, mods)
         if tool == "text":
-            self.commit_text_box()
+            # Read the chosen style first: committing clears the box it lives on.
             style = self.text_box
+            self.commit_text_box()
             self.text_box = TextBox(x, y)
             if style is not None:
-                for key in ("family", "size", "bold", "italic", "underline", "align"):
+                for key in ("family", "size", "bold", "italic", "underline", "align", "background"):
                     setattr(self.text_box, key, getattr(style, key))
             self.setFocus()
             return None
@@ -184,6 +195,8 @@ class EditingTools:
             return None
         if tool in self.MAGIC_TOOLS:
             return self._drag_magic(x, y)
+        if tool == "select:crop":
+            return self._drag_crop(x, y)
         if tool.startswith("select:") and self._drag_mode is not None:
             return self._drag_selection(x, y)
         return None
@@ -205,6 +218,9 @@ class EditingTools:
             return self._finish_tube()
         if tool in self.MAGIC_TOOLS:
             return self._end_magic()
+        if tool == "select:crop":
+            self._crop_drag = None
+            return None
         if tool.startswith("select:") and self._drag_mode is not None:
             return self._end_selection(x, y)
         return None
@@ -279,7 +295,10 @@ class EditingTools:
         image = Image.fromarray(shape.pixels, "RGBA").resize(
             (width, height), Image.Resampling.LANCZOS
         )
-        return self.canvas.blit(np.array(image), int(x0), int(y0))
+        pixels = np.array(image)
+        if shape.opacity < 1.0:
+            pixels[:, :, 3] = (pixels[:, :, 3] * shape.opacity).astype(np.uint8)
+        return self.canvas.blit(pixels, int(x0), int(y0))
 
     def live_item_handles(self) -> dict[str, tuple[float, float]]:
         if self.live_shape is None or not self.live_shape.placed:
@@ -351,8 +370,9 @@ class EditingTools:
         if self.live_shape.pixels is not None:
             self.live_shape.start = ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
             self.live_shape.end = self.live_shape.start
-            width, height = max(8, int(abs(x1 - x0))), max(8, int(abs(y1 - y0)))
-            self.sticker_size = max(width, height)
+            width, height = max(8.0, abs(x1 - x0)), max(8.0, abs(y1 - y0))
+            self.live_shape.size = (width, height)
+            self.sticker_size = int(max(width, height))
 
     def place_sticker(self, x: float, y: float, mods) -> None:
         ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
@@ -361,9 +381,12 @@ class EditingTools:
                 return None
             if self.live_shape is not None:
                 self.commit_live_shape()
-        pixels = self._sticker_pixels(self.sticker_size)
+        # Keep a large source so the sticker stays sharp when enlarged.
+        pixels = self._sticker_pixels(STICKER_SOURCE_SIZE)
         if pixels is None:
             return None
+        height, width = pixels.shape[:2]
+        fit = self.sticker_size / max(width, height)
         self.live_shape = LiveShape(
             self.tool.split(":", 1)[1],
             (x, y),
@@ -372,6 +395,8 @@ class EditingTools:
             placed=True,
             source="sticker",
             color=self.color,
+            opacity=self.opacity,
+            size=(width * fit, height * fit),
         )
         self._live_drag = None
         self.stage.update()
@@ -435,12 +460,13 @@ class EditingTools:
     def _sticker_pixels(self, size: int):
         """The chosen sticker as RGBA, drawn or loaded from the user's image."""
         kind = self.tool.split(":", 1)[1]
-        if kind == "custom":
-            if self.custom_sticker is None:
+        if kind.startswith("custom:"):
+            index = int(kind.split(":", 1)[1])
+            if not 0 <= index < len(self.custom_stickers):
                 return None
             from PIL import Image
 
-            image = Image.fromarray(self.custom_sticker, "RGBA")
+            image = Image.fromarray(self.custom_stickers[index], "RGBA")
             image.thumbnail((size, size), Image.Resampling.LANCZOS)
             return np.array(image)
         return _icon_to_array(icons.sticker_icon(kind, size), size)
@@ -680,26 +706,154 @@ class EditingTools:
                 return name
         return None
 
-    def add_custom_sticker(self) -> None:
-        """Use an image from disk as a sticker, the original's Add sticker."""
-        from PySide6.QtWidgets import QFileDialog
+    def choose_image(self, title: str) -> np.ndarray | None:
+        """Pick an image file; None if cancelled or unreadable (and say so)."""
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
 
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Choose your own sticker", "", "Images (*.png *.jpg *.jpeg *.webp *.bmp)"
-        )
+        from Clay3D.io_files import IMAGE_FILTER, load_image
+
+        path, _ = QFileDialog.getOpenFileName(self, title, "", IMAGE_FILTER)
         if not path:
-            return
-        from Clay3D.io_files import load_image
+            return None
+        try:
+            return load_image(path).pixels
+        except (OSError, ValueError):
+            if not getattr(self, "suppress_dialogs", False):
+                QMessageBox.information(
+                    self, "Can't read that file", "It may be invalid, or in a format we don't support."
+                )
+            return None
 
-        self.custom_sticker = load_image(path).pixels
-        self.set_tool("sticker:custom")
+    def add_custom_sticker(self) -> None:
+        """Add sticker: the chosen image joins Custom stickers and is previewed."""
+        pixels = self.choose_image("Choose your own sticker")
+        if pixels is not None:
+            self.use_custom_sticker(pixels)
+
+    def use_custom_sticker(self, pixels: np.ndarray) -> None:
+        self.custom_stickers.append(pixels)
+        self.set_category("Stickers")
+        self.set_tool(f"sticker:custom:{len(self.custom_stickers) - 1}")
+        # Preview it on the paper at once, with handles, ready to stamp.
+        self.place_sticker(self.canvas.width / 2, self.canvas.height / 2, Qt.KeyboardModifier.NoModifier)
+        self.refresh_panels()
 
     def start_magic_select(self) -> None:
         self.choose_select_tool("select:magic")
 
     def start_crop(self) -> None:
-        self.set_category("Select")
-        self.set_tool("select:crop")
+        self.choose_select_tool("select:crop")
+
+    # ---- crop tool ---------------------------------------------------------
+    # A box over the paper with handles, an aspect ratio, then Done or Cancel.
+
+    CROP_RATIOS = {"1:1": 1.0, "16:9": 16 / 9, "3:2": 3 / 2, "4:3": 4 / 3, "5:3": 5 / 3, "9:16": 9 / 16}
+
+    def start_crop_session(self) -> None:
+        self.crop_box = (0.0, 0.0, float(self.canvas.width), float(self.canvas.height))
+        self.crop_ratio = "free"
+        self._crop_drag = None
+
+    def crop_handles(self) -> dict[str, tuple[float, float]]:
+        if self.crop_box is None:
+            return {}
+        handles = handles_for_box(self.crop_box, self._handle_reach())
+        handles.pop("Rotate")
+        return handles
+
+    def set_crop_ratio(self, key: str) -> None:
+        """Reshape the crop box to a ratio, keeping its centre and width where it fits."""
+        self.crop_ratio = key
+        ratio = self.CROP_RATIOS.get(key)
+        if self.crop_box is None or ratio is None:
+            self.refresh_panels()
+            return
+        x0, y0, x1, y1 = self.crop_box
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        width = min(x1 - x0, self.canvas.width)
+        height = width / ratio
+        if height > self.canvas.height:
+            height = float(self.canvas.height)
+            width = height * ratio
+        x0 = min(max(0.0, cx - width / 2), self.canvas.width - width)
+        y0 = min(max(0.0, cy - height / 2), self.canvas.height - height)
+        self.crop_box = (x0, y0, x0 + width, y0 + height)
+        self.refresh_panels()
+        self.stage.update()
+
+    def finish_crop(self) -> None:
+        if self.crop_box is None:
+            return
+        box = tuple(int(round(v)) for v in self.crop_box)
+        self.crop_box = None
+        self.push_undo()
+        self.canvas.pixels = imagefx.crop(self.canvas.pixels, box)
+        self.canvas.height, self.canvas.width = self.canvas.pixels.shape[:2]
+        self.stage.reload_canvas()
+        self.choose_select_tool("select:box")
+        self.fit_to_window()
+
+    def cancel_crop(self) -> None:
+        self.crop_box = None
+        self.choose_select_tool("select:box")
+
+    def _begin_crop_drag(self, x: float, y: float):
+        self._crop_drag = None
+        reach = self._handle_reach() * 1.4
+        for name, (hx, hy) in self.crop_handles().items():
+            if math.hypot(x - hx, y - hy) <= reach:
+                self._crop_drag = name
+                return None
+        x0, y0, x1, y1 = self.crop_box or (0, 0, 0, 0)
+        if x0 <= x <= x1 and y0 <= y <= y1:
+            self._crop_drag = ("move", x, y, self.crop_box)
+        return None
+
+    def _drag_crop(self, x: float, y: float):
+        drag = getattr(self, "_crop_drag", None)
+        if drag is None or self.crop_box is None:
+            return None
+        if isinstance(drag, tuple):
+            _, ox, oy, (x0, y0, x1, y1) = drag
+            width, height = x1 - x0, y1 - y0
+            nx0 = min(max(0.0, x0 + x - ox), self.canvas.width - width)
+            ny0 = min(max(0.0, y0 + y - oy), self.canvas.height - height)
+            self.crop_box = (nx0, ny0, nx0 + width, ny0 + height)
+        else:
+            self.crop_box = _drag_box_edge(
+                self.crop_box, drag, x, y, self.canvas.width, self.canvas.height
+            )
+        self.refresh_panels()
+        self.stage.update()
+        return None
+
+    # ---- selection commands --------------------------------------------------
+
+    def turn_selection(self, direction: str) -> None:
+        """Rotate and flip, applied to the floating selection."""
+        if self.selection is None or self.selection.is_empty():
+            return
+        if self.selection.floating is None:
+            self.push_undo()
+            self.selection.lift(self.canvas)
+            self.stage.reload_canvas()
+        if direction == "rotate_left":
+            self.selection.rotation -= math.pi / 2
+        elif direction == "rotate_right":
+            self.selection.rotation += math.pi / 2
+        elif direction == "flip_horizontal":
+            self.selection.scale = self.selection.scale * np.array([-1.0, 1.0])
+        elif direction == "flip_vertical":
+            self.selection.scale = self.selection.scale * np.array([1.0, -1.0])
+        self.refresh_panels()
+        self.stage.update()
+
+    def make_sticker_from_selection(self) -> None:
+        """Make sticker: the selection becomes a custom sticker to stamp."""
+        if self.selection is None or self.selection.is_empty():
+            return
+        self.copy_selection()
+        self.use_custom_sticker(self.clipboard)
 
     def _begin_selection(self, kind: str, x: float, y: float):
         if self.selection is not None and not self.selection.is_empty():
@@ -728,16 +882,10 @@ class EditingTools:
         self._drag_mode = kind
         self._drag_origin = (x, y)
         self._select_preview = None
-        if kind == "freeform":
-            self._stroke_points = [(x, y)]
         return None
 
     def _drag_selection(self, x: float, y: float):
-        if self._drag_mode == "freeform":
-            self._stroke_points.append((x, y))
-            self.stage.update()
-            return None
-        if self._drag_mode in ("box", "crop"):
+        if self._drag_mode == "box":
             x0, y0 = self._drag_origin
             self._select_preview = (min(x0, x), min(y0, y), max(x0, x), max(y0, y))
             self.stage.update()
@@ -791,19 +939,6 @@ class EditingTools:
         x0, y0 = self._drag_origin
         if mode == "box":
             self.selection = selection.box(self.canvas, x0, y0, x, y)
-        elif mode == "freeform":
-            self.selection = selection.freeform(self.canvas, self._stroke_points)
-            self._stroke_points = []
-        elif mode == "crop":
-            self.push_undo()
-            self.canvas.pixels = imagefx.crop(
-                self.canvas.pixels, (int(min(x0, x)), int(min(y0, y)), int(max(x0, x)), int(max(y0, y)))
-            )
-            self.canvas.height, self.canvas.width = self.canvas.pixels.shape[:2]
-            self.selection = None
-            self.stage.reload_canvas()
-            self.fit_to_window()
-            return None
         if self.selection is not None and self.selection.is_empty():
             self.selection = None
         self.stage.update()
@@ -943,9 +1078,11 @@ class EditingTools:
     def crop_to_selection(self) -> None:
         if self.selection is None or self.selection.is_empty():
             return
+        # Box as shown, so a moved or scaled image crops to its whole frame.
+        frame = self.selection_frame()
         self.stamp_floating()
         self.push_undo()
-        self.canvas.pixels = imagefx.crop(self.canvas.pixels, self.selection.bounds)
+        self.canvas.pixels = imagefx.crop(self.canvas.pixels, frame)
         self.canvas.height, self.canvas.width = self.canvas.pixels.shape[:2]
         self.selection = None
         self.stage.reload_canvas()
@@ -953,9 +1090,22 @@ class EditingTools:
 
     # ---- canvas operations ------------------------------------------------
 
-    def resize_canvas(self, width: int, height: int, anchor: str = "TopLeft", fit: bool = True) -> None:
+    def resize_canvas(
+        self, width: int, height: int, anchor: str = "TopLeft", fit: bool = True,
+        scale_image: bool = False,
+    ) -> None:
+        """New paper size. scale_image: "Resize image with canvas"."""
+        self.clear_selection()
         self.push_undo()
-        self.canvas.resize(width, height, anchor=anchor)
+        if scale_image:
+            from PIL import Image
+
+            image = Image.fromarray(self.canvas.pixels, "RGBA")
+            image = image.resize((max(1, width), max(1, height)), Image.Resampling.LANCZOS)
+            self.canvas.pixels = np.array(image)
+            self.canvas.height, self.canvas.width = self.canvas.pixels.shape[:2]
+        else:
+            self.canvas.resize(width, height, anchor=anchor)
         self.stage.reload_canvas()
         if fit:
             self.fit_to_window()
@@ -1028,12 +1178,6 @@ class EditingTools:
         self.canvas.height, self.canvas.width = self.canvas.pixels.shape[:2]
         self.stage.reload_canvas()
         self.fit_to_window()
-        self.refresh_panels()
-
-    def apply_image_filter(self, name: str) -> None:
-        self.push_undo()
-        self.canvas.pixels = imagefx.apply_filter(self.canvas.pixels, name)
-        self.stage.reload_canvas()
         self.refresh_panels()
 
 
@@ -1112,7 +1256,10 @@ def _render_text(box: TextBox, color) -> tuple[np.ndarray, tuple[int, int]]:
     width = max((metrics.horizontalAdvance(line) for line in lines), default=1) + 8
     height = metrics.height() * len(lines) + 8
     image = QImage(max(1, width), max(1, height), QImage.Format.Format_RGBA8888)
-    image.fill(Qt.GlobalColor.transparent)
+    if box.background is not None:
+        image.fill(QColor(*box.background[:3]))
+    else:
+        image.fill(Qt.GlobalColor.transparent)
     painter = QPainter(image)
     painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
     painter.setFont(font)

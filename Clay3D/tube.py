@@ -20,7 +20,7 @@ PROFILES = (
 
 # Tube tapers.
 TAPERS = (
-    ("uniform", "No taper"),
+    ("uniform", "None"),
     ("big_to_small", "Big to small"),
     ("small_to_big", "Small to big"),
     ("small_to_big_to_small", "Small to big to small"),
@@ -28,7 +28,7 @@ TAPERS = (
 )
 
 TAPER_HINTS = {
-    "uniform": "Keep the tube the same width from end to end.",
+    "uniform": "No taper",
     "big_to_small": "Make the start of the tube larger than the end of the tube",
     "small_to_big": "Make the start of the tube smaller and the end of the tube larger",
     "small_to_big_to_small": (

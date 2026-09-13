@@ -32,6 +32,9 @@ GL_DEPTH_BUFFER_BIT = 0x0100
 GL_TEXTURE_2D = 0x0DE1
 GL_TEXTURE0 = 0x84C0
 GL_MULTISAMPLE = 0x809D
+
+# Settings > Adjust display quality: multisample count per level.
+DISPLAY_QUALITY_SAMPLES = {"Normal": 0, "High": 4, "Ultra": 8}
 GL_FRAMEBUFFER = 0x8D40
 
 PIXEL_RGBA = QOpenGLTexture.PixelFormat.RGBA
@@ -88,6 +91,7 @@ class SceneRenderer(QOpenGLFunctions):
         self._canvas_extent = (0.0, 0.0)
         self._screen_quad: _Buffer | None = None
         self._multisample: QOpenGLFramebufferObject | None = None
+        self.quality = "High"   # Settings > Adjust display quality
         self._resolved: QOpenGLFramebufferObject | None = None
         self._target_size = (0, 0)
         self.ready = False
@@ -126,18 +130,35 @@ class SceneRenderer(QOpenGLFunctions):
 
     # ---- textures -------------------------------------------------------
 
-    def _new_texture(self, pixels: np.ndarray) -> QOpenGLTexture:
+    def set_quality(self, name: str) -> None:
+        """Normal: no anti-aliasing. High: 4x. Ultra: 8x and mipmapped canvas."""
+        self.quality = name
+        self._target_size = (0, 0)          # rebuild the multisample target
+        if self.canvas_texture is not None:
+            self.canvas_texture.destroy()
+            self.canvas_texture = None      # re-created with the new filtering
+            self.canvas_shape = None
+
+    def _new_texture(self, pixels: np.ndarray, mipmapped: bool = False) -> QOpenGLTexture:
         height, width = pixels.shape[:2]
         texture = QOpenGLTexture(QOpenGLTexture.Target.Target2D)
         texture.setFormat(QOpenGLTexture.TextureFormat.RGBA8_UNorm)
         texture.setSize(width, height)
-        texture.setMipLevels(1)
-        texture.setMinMagFilters(
-            QOpenGLTexture.Filter.Linear, QOpenGLTexture.Filter.Linear
-        )
+        if mipmapped:
+            texture.setMipLevels(texture.maximumMipLevels())
+            texture.setMinMagFilters(
+                QOpenGLTexture.Filter.LinearMipMapLinear, QOpenGLTexture.Filter.Linear
+            )
+        else:
+            texture.setMipLevels(1)
+            texture.setMinMagFilters(
+                QOpenGLTexture.Filter.Linear, QOpenGLTexture.Filter.Linear
+            )
         texture.setWrapMode(QOpenGLTexture.WrapMode.ClampToEdge)
         texture.allocateStorage(PIXEL_RGBA, PIXEL_UINT8)
         texture.setData(PIXEL_RGBA, PIXEL_UINT8, np.ascontiguousarray(pixels).tobytes())
+        if mipmapped:
+            texture.generateMipMaps()
         return texture
 
     def sync_canvas(self, canvas, dirty=None) -> None:
@@ -150,7 +171,7 @@ class SceneRenderer(QOpenGLFunctions):
         if self.canvas_texture is None or shape != self.canvas_shape:
             if self.canvas_texture is not None:
                 self.canvas_texture.destroy()
-            self.canvas_texture = self._new_texture(canvas.pixels)
+            self.canvas_texture = self._new_texture(canvas.pixels, mipmapped=self.quality == "Ultra")
             self.canvas_shape = shape
             return
         if dirty is None:
@@ -160,6 +181,8 @@ class SceneRenderer(QOpenGLFunctions):
         self.canvas_texture.setData(
             x0, y0, 0, x1 - x0, y1 - y0, 1, PIXEL_RGBA, PIXEL_UINT8, patch.tobytes()
         )
+        if self.quality == "Ultra":
+            self.canvas_texture.generateMipMaps()
 
     def _object_texture(self, obj) -> QOpenGLTexture:
         cached = self.textures.get(id(obj))
@@ -216,7 +239,7 @@ class SceneRenderer(QOpenGLFunctions):
         if self._multisample is not None and self._target_size == (width, height):
             return
         multisampled = QOpenGLFramebufferObjectFormat()
-        multisampled.setSamples(4)
+        multisampled.setSamples(DISPLAY_QUALITY_SAMPLES[self.quality])
         multisampled.setAttachment(QOpenGLFramebufferObject.Attachment.Depth)
         self._multisample = QOpenGLFramebufferObject(width, height, multisampled)
         plain = QOpenGLFramebufferObjectFormat()

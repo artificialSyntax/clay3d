@@ -12,3 +12,6 @@ clay3d = "Clay3D.app:main"
 
 [tool.setuptools.packages.find]
 include = ["Clay3D*"]
+
+[tool.setuptools.package-data]
+Clay3D = ["ui_icons/*.svg", "ui_icons/LICENSE-lucide.txt"]

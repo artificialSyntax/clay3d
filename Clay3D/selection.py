@@ -9,13 +9,6 @@ from PIL import Image
 
 Rect = tuple[int, int, int, int]
 
-SELECT_TYPES = (
-    ("box", "Rectangular selection"),
-    ("freeform", "Freeform selection"),
-    ("magic", "Magic select"),
-)
-
-
 class Selection:
     """A masked region of the canvas, optionally lifted off it."""
 
@@ -138,24 +131,6 @@ def box(canvas, x0: float, y0: float, x1: float, y1: float) -> Selection:
     right, bottom = min(canvas.width, right), min(canvas.height, bottom)
     if right > left and bottom > top:
         mask[top:bottom, left:right] = True
-    return Selection(mask)
-
-
-def freeform(canvas, path: list[tuple[float, float]]) -> Selection:
-    """Everything inside a lassoed path, by the even-odd rule."""
-    mask = np.zeros((canvas.height, canvas.width), dtype=bool)
-    if len(path) < 3:
-        return Selection(mask)
-    xs = np.arange(canvas.width, dtype=np.float32) + 0.5
-    ys = np.arange(canvas.height, dtype=np.float32) + 0.5
-    ring = list(path)
-    for (ax, ay), (bx, by) in zip(ring, ring[1:] + ring[:1]):
-        if ay == by:
-            continue
-        crosses = ((ys >= min(ay, by)) & (ys < max(ay, by)))[:, None]
-        t = (ys - ay) / (by - ay)
-        crossing = (ax + t * (bx - ax))[:, None]
-        mask ^= crosses & (xs[None, :] >= crossing)
     return Selection(mask)
 
 

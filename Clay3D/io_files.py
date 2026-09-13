@@ -19,6 +19,10 @@ SCENE_VERSION = 3
 MAX_IMAGE_PIXELS = 64_000_000
 MAX_ZIP_MEMBER = 48 * 1024 * 1024
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tif", ".tiff"}
+# Both cases: some desktop file choosers match patterns case-sensitively.
+IMAGE_FILTER = "Images ({})".format(
+    " ".join(f"*{s} *{s.upper()}" for s in sorted(IMAGE_SUFFIXES))
+)
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 
 
@@ -34,6 +38,41 @@ def save_image(canvas: Canvas, path: str | Path) -> None:
         Image.fromarray(flat.astype(np.uint8), "RGB").save(path, quality=95)
         return
     Image.fromarray(pixels, "RGBA").save(path)
+
+
+# Save as > Image: the original's file types, in its order.
+EXPORT_TYPES = (
+    ("PNG", ".png", True),     # name, suffix, keeps transparency
+    ("JPEG", ".jpg", False),
+    ("BMP", ".bmp", False),
+    ("GIF", ".gif", True),
+    ("TIFF", ".tif", True),
+)
+
+
+def export_pixels(pixels: np.ndarray, width: int, height: int, transparent: bool) -> np.ndarray:
+    """The picture as it will be saved: scaled, and flattened on white unless transparent."""
+    image = Image.fromarray(pixels, "RGBA")
+    if image.size != (width, height):
+        image = image.resize((max(1, width), max(1, height)), Image.Resampling.LANCZOS)
+    out = np.array(image)
+    if not transparent:
+        alpha = out[:, :, 3:4].astype(np.float32) / 255.0
+        out[:, :, :3] = (out[:, :, :3] * alpha + 255.0 * (1.0 - alpha)).astype(np.uint8)
+        out[:, :, 3] = 255
+    return out
+
+
+def encode_image(pixels: np.ndarray, type_name: str) -> bytes:
+    """Encoded file bytes for one of EXPORT_TYPES; used for File size and for saving."""
+    keeps_alpha = dict((name, alpha) for name, _, alpha in EXPORT_TYPES)[type_name]
+    image = Image.fromarray(pixels, "RGBA")
+    if not keeps_alpha:
+        image = image.convert("RGB")
+    buffer = BytesIO()
+    options = {"quality": 95} if type_name == "JPEG" else {}
+    image.save(buffer, format=type_name, **options)
+    return buffer.getvalue()
 
 
 def pixels_from_path(path: str | Path) -> np.ndarray | None:
@@ -54,7 +93,7 @@ def _canvas_from_pil(image: Image.Image) -> Canvas:
         raise ValueError("image too large")
     if image.mode != "RGBA":
         image = image.convert("RGBA")
-    pixels = np.ascontiguousarray(image)
+    pixels = np.array(image)   # a copy: arrays viewed from PIL are read-only, and tools paint on this
     canvas = Canvas(pixels.shape[1], pixels.shape[0], background=(0, 0, 0, 0))
     canvas.pixels = pixels
     return canvas

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QMouseEvent, QPainter, QPixmap
+from PySide6.QtGui import QColor, QIcon, QMouseEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -19,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from Clay3D import icons
-from Clay3D.theme import ACCENT, LINE, PALETTE
+from Clay3D.theme import ACCENT, LINE, MATERIALS, PALETTE, PALETTE_COLUMNS
 
 
 def heading(text: str) -> QLabel:
@@ -163,40 +164,65 @@ class Swatch(QToolButton):
 
 
 class ColorSection(QWidget):
-    """The current colour, the default swatches, and a way to add more."""
+    """Material and Color block, laid out as the original's 216 px column.
+
+    Material dropdown; current colour beside the eyedropper; 6x3 palette;
+    Add color.
+    """
 
     picked = Signal(tuple)
+    material_chosen = Signal(int)
+    eyedropper = Signal()
 
-    def __init__(self, color: tuple[int, int, int, int]):
+    WIDTH = 216
+
+    def __init__(self, color: tuple[int, int, int, int], materials: bool = False):
         super().__init__()
         self._color = color
+        self.setFixedWidth(self.WIDTH)
         box = QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
-        box.setSpacing(6)
-        box.addWidget(section("Colors"))
+        box.setSpacing(12)
+        box.addWidget(section("Material and Color"))
+
+        self.material = QComboBox()
+        self.material.setFixedHeight(40)
+        self.material.setToolTip("Choose a material")
+        for name, _, _ in MATERIALS:
+            self.material.addItem(name)
+        self.material.setEnabled(materials)
+        self.material.currentIndexChanged.connect(self.material_chosen.emit)
+        box.addWidget(self.material)
 
         current = QHBoxLayout()
-        current.setSpacing(8)
-        self.chip = QLabel()
-        self.chip.setFixedSize(34, 34)
+        current.setSpacing(0)
+        self.chip = QToolButton()
+        self.chip.setFixedSize(144, 48)
+        self.chip.setToolTip("Edit color")
+        self.chip.clicked.connect(self._open_dialog)
         current.addWidget(self.chip)
-        self.readout = QLabel()
-        self.readout.setProperty("role", "value")
-        current.addWidget(self.readout)
-        current.addStretch(1)
+        self.pipette = QToolButton()
+        self.pipette.setFixedSize(72, 48)
+        self.pipette.setCheckable(True)
+        self.pipette.setProperty("role", "tile")
+        self.pipette.setToolTip("Eyedropper")
+        self.pipette.setIcon(icons.ui_icon("pipette", 22))
+        self.pipette.setIconSize(QSize(22, 22))
+        self.pipette.clicked.connect(lambda checked=False: self.eyedropper.emit())
+        current.addWidget(self.pipette)
         box.addLayout(current)
 
         grid = QGridLayout()
-        grid.setSpacing(3)
-        self._custom_row = 2
+        grid.setSpacing(0)
         for index, rgb in enumerate(PALETTE):
-            swatch = Swatch(rgb)
+            swatch = Swatch(rgb, 36)
             swatch.clicked.connect(lambda checked=False, c=rgb: self._choose(c))
-            grid.addWidget(swatch, index // 10, index % 10)
+            grid.addWidget(swatch, index // PALETTE_COLUMNS, index % PALETTE_COLUMNS)
         self._grid = grid
         box.addLayout(grid)
 
         add = QPushButton("Add color")
+        add.setFixedHeight(36)
         add.clicked.connect(self._open_dialog)
         box.addWidget(add)
         self._refresh()
@@ -212,26 +238,31 @@ class ColorSection(QWidget):
         picker.popup_at(self)
 
     def _add_custom(self, rgb: tuple[int, int, int]) -> None:
-        swatch = Swatch(rgb)
+        swatch = Swatch(rgb, 36)
         swatch.clicked.connect(lambda checked=False, c=rgb: self._choose(c))
-        slot = self._grid.count() - len(PALETTE)
-        self._grid.addWidget(swatch, self._custom_row + slot // 10, slot % 10)
+        slot = self._grid.count()
+        self._grid.addWidget(swatch, slot // PALETTE_COLUMNS, slot % PALETTE_COLUMNS)
         self._choose(rgb)
 
     def set_color(self, color: tuple[int, int, int, int]) -> None:
         self._color = color
         self._refresh()
 
+    def set_eyedropper(self, on: bool) -> None:
+        self.pipette.setChecked(on)
+
+    def set_material(self, index: int) -> None:
+        self.material.blockSignals(True)
+        self.material.setCurrentIndex(index)
+        self.material.blockSignals(False)
+
     def _refresh(self) -> None:
-        pixmap = QPixmap(34, 34)
-        pixmap.fill(QColor(*self._color[:3]))
-        painter = QPainter(pixmap)
-        painter.setPen(QColor(LINE))
-        painter.drawRect(0, 0, 33, 33)
-        painter.end()
-        self.chip.setPixmap(pixmap)
         r, g, b = self._color[:3]
-        self.readout.setText(f"#{r:02X}{g:02X}{b:02X}")
+        self.chip.setStyleSheet(
+            f"QToolButton {{ background: rgb({r},{g},{b}); border: 1px solid {LINE}; }}"
+            f"QToolButton:hover {{ border: 2px solid {ACCENT}; }}"
+        )
+        self.chip.setToolTip(f"Edit color  #{r:02X}{g:02X}{b:02X}")
 
 
 class ColorPickerPopup(QWidget):
@@ -307,7 +338,8 @@ class PanelBody(QWidget):
         super().__init__()
         self.setObjectName("panelBody")
         self.box = QVBoxLayout(self)
-        self.box.setContentsMargins(14, 12, 14, 12)
+        # 24 px gutters either side of a 216 px column.
+        self.box.setContentsMargins(24, 12, 24, 12)
         self.box.setSpacing(6)
         self.box.addWidget(heading(title))
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)

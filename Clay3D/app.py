@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import sys
 from dataclasses import dataclass, field
 
@@ -11,9 +12,7 @@ import numpy as np
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QColor,
-    QFont,
     QFontMetrics,
-    QIcon,
     QImage,
     QKeySequence,
     QPainter,
@@ -25,35 +24,30 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
-    QButtonGroup,
     QFileDialog,
-    QHBoxLayout,
-    QLabel,
+    QGridLayout,
     QMainWindow,
     QMessageBox,
-    QPushButton,
     QScrollArea,
-    QSlider,
     QStackedWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from Clay3D import brushes, icons, imagefx, selection, shapes2d
+from Clay3D import brushes, chrome, icons, recent, selection, settings, shapes2d
 from Clay3D.canvas2d import Canvas
-from Clay3D.io_files import load_image, load_scene, save_image, save_scene
+from Clay3D.io_files import IMAGE_FILTER, load_image, load_scene, save_image, save_scene
 from Clay3D.editing import EditingTools, TextBox
 from Clay3D.panels import CONTEXT_PANELS, TABS
+from Clay3D.recording import HistoryRecorder, ffmpeg_available
 from Clay3D.scene3d import Scene
 from Clay3D.stage import Stage
 from Clay3D.theme import ACCENT, STYLESHEET
-from Clay3D.widgets import rule
 
 from Clay3D.tuning import CANVAS_DEFAULT_SIZE, UNDO_DEPTH
 
 CANVAS_WIDTH, CANVAS_HEIGHT = CANVAS_DEFAULT_SIZE
-PANEL_WIDTH = 312
 
 
 @dataclass
@@ -80,9 +74,13 @@ class EditorWindow(QMainWindow, EditingTools):
         self.opacity = 1.0
         self.shape_style = "both"
         self.sticker_size = 120
-        self.custom_sticker: np.ndarray | None = None
+        self.custom_stickers: list[np.ndarray] = []   # Add sticker / Make sticker, in order
         self.magic = None               # selection.MagicCutout while magic select is open
         self.autofill_background = True  # "Lift an object out ... we'll automatically fill in the background"
+        self.material_index = 0         # theme.MATERIALS, "Matte"
+        self.crop_box = None            # (x0, y0, x1, y1) while the crop tool is open
+        self.crop_ratio = "free"
+        self._before_eyedropper = "marker"
         self.tube_profile = "cylinder"
         self.tube_taper = "uniform"
         self.selection: selection.Selection | None = None
@@ -92,6 +90,7 @@ class EditorWindow(QMainWindow, EditingTools):
         self._live_drag = None
         self._live_start_box = (0.0, 0.0, 0.0, 0.0)
         self._stroke_points: list[tuple[float, float]] = []
+        self.recorder = HistoryRecorder()
         self._undo: list[Undo] = []
         self._redo: list[Undo] = []
         self._drag_mode: str | None = None
@@ -101,10 +100,11 @@ class EditorWindow(QMainWindow, EditingTools):
         self.suppress_dialogs = False
 
         self._build()
+        self.apply_saved_settings()
         self.setAcceptDrops(True)
         self.apply_paint_settings()
         self.set_category("Brushes")
-        QTimer.singleShot(0, lambda: self.scene.frame_canvas(self.stage.width(), self.stage.height()))
+        QTimer.singleShot(0, self.fit_to_window)
 
     @property
     def canvas(self) -> Canvas:
@@ -120,24 +120,28 @@ class EditorWindow(QMainWindow, EditingTools):
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(0)
 
-        column.addWidget(self._tab_strip())
-        column.addWidget(rule())
+        column.addWidget(chrome.top_bar(self, [name for name, _ in TABS]))
 
-        body = QHBoxLayout()
+        # Paint 3D's grid: tools bar over the stage, side panel beside both.
+        body = QGridLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
         self.stage = Stage(self)
-        body.addWidget(self.stage, 1)
-        body.addWidget(self._right_panel())
+        body.addWidget(chrome.tools_bar(self), 0, 0)
+        body.addWidget(self.stage, 1, 0)
+        body.addWidget(self._right_panel(), 0, 1, 2, 1)
+        body.setRowStretch(1, 1)
+        body.setColumnStretch(0, 1)
         column.addLayout(body, 1)
-
-        column.addWidget(rule())
-        column.addWidget(self._bottom_bar())
 
         self.stack = QStackedWidget()
         self.stack.addWidget(page)
-        self.menu_page = self._menu_page()
+        self.menu_page = chrome.menu_page(self)
         self.stack.addWidget(self.menu_page)
+        from Clay3D.saveas import SaveAsImagePage
+
+        self.save_as_page = SaveAsImagePage(self)
+        self.stack.addWidget(self.save_as_page)
         self.setCentralWidget(self.stack)
         self._install_shortcuts()
 
@@ -153,74 +157,10 @@ class EditorWindow(QMainWindow, EditingTools):
         if self.import_from_mime(event.mimeData()):
             event.acceptProposedAction()
 
-    def _tab_strip(self) -> QWidget:
-        bar = QWidget()
-        bar.setObjectName("tabStrip")
-        row = QHBoxLayout(bar)
-        row.setContentsMargins(8, 2, 8, 0)
-        row.setSpacing(2)
-
-        menu = QToolButton()
-        menu.setText("Menu")
-        menu.setProperty("role", "action")
-        menu.clicked.connect(self.show_menu)
-        row.addWidget(menu)
-        row.addSpacing(10)
-
-        self.tab_buttons: dict[str, QToolButton] = {}
-        group = QButtonGroup(self)
-        for name, _ in TABS:
-            button = QToolButton()
-            button.setText(name)
-            button.setIcon(icons.tab_icon(name))
-            button.setIconSize(QSize(20, 20))
-            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
-            button.setCheckable(True)
-            button.setProperty("role", "tab")
-            button.clicked.connect(lambda checked=False, n=name: self.set_category(n))
-            group.addButton(button)
-            row.addWidget(button)
-            self.tab_buttons[name] = button
-
-        row.addStretch(1)
-        # Select lives in the top bar in the original, not in the tabs.
-        self.select_buttons: dict[str, QToolButton] = {}
-        for tool, label, glyph in (
-            ("select:box", "2D select", icons.select_icon("box", 18)),
-            ("select:magic", "Magic select", icons.select_icon("magic", 18)),
-            ("select:crop", "Crop", icons.select_icon("crop", 18)),
-        ):
-            button = self._action_button(
-                label, label, lambda t=tool: self.choose_select_tool(t)
-            )
-            button.setIcon(glyph)
-            button.setCheckable(True)
-            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-            row.addWidget(button)
-            self.select_buttons[tool] = button
-        self.undo_button = self._action_button("Undo", "Undo", self.undo)
-        self.undo_button.setIcon(icons.history_icon("undo", 18))
-        self.undo_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.redo_button = self._action_button("Redo", "Redo", self.redo)
-        self.redo_button.setIcon(icons.history_icon("redo", 18))
-        self.redo_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        row.addWidget(self.undo_button)
-        row.addWidget(self.redo_button)
-        return bar
-
-    def _action_button(self, tooltip: str, text: str, handler) -> QToolButton:
-        button = QToolButton()
-        button.setText(text)
-        button.setToolTip(tooltip)
-        button.setProperty("role", "action")
-        # clicked(bool) must not eat the handler's arguments.
-        button.clicked.connect(lambda checked=False, fn=handler: fn())
-        return button
-
     def _right_panel(self) -> QWidget:
         holder = QWidget()
         holder.setObjectName("rightPanel")
-        holder.setFixedWidth(PANEL_WIDTH)
+        holder.setFixedWidth(chrome.SIDE_PANEL_WIDTH)
         box = QVBoxLayout(holder)
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(0)
@@ -236,102 +176,22 @@ class EditorWindow(QMainWindow, EditingTools):
             scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             self.panels[name] = panel
             self.panel_index[name] = self.panel_stack.addWidget(scroller)
-        box.addWidget(self.panel_stack)
+        # Compact view: a narrow strip naming the tab; click it to open the panel.
+        self.compact_header = QToolButton()
+        self.compact_header.setProperty("role", "compactHeader")
+        self.compact_header.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        self.compact_header.setIconSize(QSize(24, 24))
+        self.compact_header.setFixedHeight(chrome.COMPACT_HEADER_HEIGHT)
+        self.compact_header.setToolTip("Show or hide the sidebar")
+        self.compact_header.clicked.connect(lambda checked=False: self.toggle_compact_panel())
+        self.compact_header.hide()
+        box.addWidget(self.compact_header)
+        box.addWidget(self.panel_stack, 1)
+        self.compact_filler = QWidget()     # holds the strip at the top while collapsed
+        self.compact_filler.hide()
+        box.addWidget(self.compact_filler, 1)
+        self.right_panel = holder
         return holder
-
-    def _bottom_bar(self) -> QWidget:
-        bar = QWidget()
-        bar.setObjectName("bottomBar")
-        row = QHBoxLayout(bar)
-        row.setContentsMargins(12, 6, 12, 6)
-        row.setSpacing(8)
-
-        row.addStretch(1)
-        self.view_2d = QPushButton("2D view")
-        self.view_2d.setCheckable(True)
-        self.view_2d.setChecked(True)
-        self.view_2d.clicked.connect(lambda checked=False: self.set_view("2d"))
-        self.view_3d = QPushButton("3D view")
-        self.view_3d.setCheckable(True)
-        self.view_3d.clicked.connect(lambda checked=False: self.set_view("orbit"))
-        row.addWidget(self.view_2d)
-        row.addWidget(self.view_3d)
-        self.perspective = QToolButton()
-        self.perspective.setText("Show perspective")
-        self.perspective.setToolTip(
-            "Create in a 3D workspace that shows depth and relative size. "
-            "(Recommended for 3D projects)."
-        )
-        self.perspective.setCheckable(True)
-        self.perspective.setChecked(True)
-        self.perspective.setProperty("role", "action")
-        self.perspective.toggled.connect(self.set_perspective)
-        row.addWidget(self.perspective)
-        row.addStretch(1)
-
-        zoom_out = self._action_button("Zoom out", "−", lambda: self.zoom_by(0.8))
-        row.addWidget(zoom_out)
-        self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
-        self.zoom_slider.setFixedWidth(160)
-        self.zoom_slider.setRange(10, 800)
-        self.zoom_slider.setValue(100)
-        self.zoom_slider.valueChanged.connect(self._zoom_slider_moved)
-        self.zoom_slider.setToolTip("Adjust the zoom")
-        row.addWidget(self.zoom_slider)
-        row.addWidget(self._action_button("Zoom in", "+", lambda: self.zoom_by(1.25)))
-        self.zoom_label = QLabel("100%")
-        self.zoom_label.setProperty("role", "value")
-        self.zoom_label.setFixedWidth(48)
-        row.addWidget(self.zoom_label)
-        row.addWidget(self._action_button("Reset view", "Reset view", self.fit_to_window))
-        row.addWidget(
-            self._action_button("Take screenshot", "Screenshot", self.take_screenshot)
-        )
-        return bar
-
-    def _menu_page(self) -> QWidget:
-        page = QWidget()
-        page.setObjectName("page")
-        page.setStyleSheet(STYLESHEET)
-        outer = QHBoxLayout(page)
-        outer.setContentsMargins(0, 0, 0, 0)
-
-        sidebar = QWidget()
-        sidebar.setObjectName("chrome")
-        sidebar.setFixedWidth(300)
-        column = QVBoxLayout(sidebar)
-        column.setContentsMargins(18, 18, 18, 18)
-        column.setSpacing(6)
-
-        back = QToolButton()
-        back.setText("←  Back")
-        back.setProperty("role", "action")
-        back.clicked.connect(self.hide_menu)
-        column.addWidget(back)
-        column.addSpacing(12)
-
-        for label, handler in (
-            ("New", self.new_document),
-            ("Open image…", self.open_file),
-            ("Save image", self.save_image_as),
-            ("Save scene…", self.save_scene_as),
-            ("Export 3D model…", self.export_model),
-        ):
-            button = QPushButton(label)
-            button.clicked.connect(handler)
-            column.addWidget(button)
-        column.addStretch(1)
-
-        about = QLabel("Clay3D\n\nPaint 3D-inspired editor for Linux.")
-        about.setWordWrap(True)
-        about.setProperty("role", "value")
-        column.addWidget(about)
-
-        outer.addWidget(sidebar)
-        blurb = QLabel()
-        blurb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        outer.addWidget(blurb, 1)
-        return page
 
     def _install_shortcuts(self) -> None:
         for keys, handler in (
@@ -386,6 +246,10 @@ class EditorWindow(QMainWindow, EditingTools):
         """Pick a select tool from the top bar and show its options."""
         if not isinstance(tool, str) or not tool.startswith("select:"):
             return
+        if tool == "select:crop" and self.selection_on_canvas():
+            # Crop with something selected crops to it at once, placing it.
+            self.crop_to_selection()
+            tool = "select:box"
         self.set_tool(tool)
         self.category = "Select"
         for key, button in self.tab_buttons.items():
@@ -395,10 +259,56 @@ class EditorWindow(QMainWindow, EditingTools):
         self.panel_stack.setCurrentIndex(self.panel_index["Select"])
         self.refresh_panels()
 
+    def selection_on_canvas(self) -> bool:
+        """A selection whose box overlaps the paper, so there is something to crop to."""
+        frame = self.selection_frame()
+        if frame is None:
+            return False
+        x0, y0, x1, y1 = frame
+        return x1 > 0 and y1 > 0 and x0 < self.canvas.width and y0 < self.canvas.height
+
+    def set_compact_view(self, on: bool) -> None:
+        """Settings > Use compact view: sidebar narrows to a strip until opened."""
+        self.compact_view = on
+        settings.save("compact_view", on)
+        self.compact_header.setVisible(on)
+        self._show_panel(not on)
+
+    def toggle_compact_panel(self) -> None:
+        self._show_panel(not self.panel_stack.isVisible())
+
+    def _show_panel(self, open_: bool) -> None:
+        self.panel_stack.setVisible(open_)
+        self.compact_filler.setVisible(not open_)
+        width = chrome.SIDE_PANEL_WIDTH if open_ else chrome.COMPACT_PANEL_WIDTH
+        self.right_panel.setFixedWidth(width)
+        self._label_compact_header()
+
+    def _label_compact_header(self) -> None:
+        name = getattr(self, "category", "Brushes")
+        icon_name = chrome.TAB_ICONS.get(name, "square-dashed-mouse-pointer")
+        self.compact_header.setIcon(icons.ui_icon(icon_name, 24))
+        self.compact_header.setText(name)
+
+    def set_display_quality(self, level: str) -> None:
+        settings.save("display_quality", level)
+        self.stage.set_quality(level)
+        self.stage.update()
+
+    def apply_saved_settings(self) -> None:
+        self.compact_switch.setChecked(settings.load("compact_view"))
+        self.set_compact_view(settings.load("compact_view"))
+        self.perspective_switch.setChecked(settings.load("show_perspective"))
+        level = settings.load("display_quality")
+        self.quality_choice.setCurrentIndex(self.quality_choice.findData(level))
+        self.stage.renderer.set_quality(level)
+
     def set_category(self, name: str) -> None:
         if name != "Select":
             self.clear_selection()
         self.category = name
+        if getattr(self, "compact_view", False):
+            self._label_compact_header()
         for key, button in self.tab_buttons.items():
             button.setChecked(key == name)
         self.panel_stack.setCurrentIndex(self.panel_index[name])
@@ -444,6 +354,10 @@ class EditorWindow(QMainWindow, EditingTools):
             self.cancel_magic_session()   # left before Done: nothing changes
         elif entering_magic:
             self.start_magic_session()
+        if tool == "select:crop" and self.tool != "select:crop":
+            self.start_crop_session()
+        elif tool != "select:crop":
+            self.crop_box = None
         self.tool = tool
         self.apply_paint_settings()
         self.refresh_panels()
@@ -483,6 +397,22 @@ class EditorWindow(QMainWindow, EditingTools):
         if self.tool in brushes.CATALOG:
             self.canvas.set_brush(self.tool)
 
+    def set_material(self, index: int) -> None:
+        """Material dropdown: a named look, applied to the selected 3D object."""
+        from Clay3D.theme import MATERIALS
+
+        self.material_index = index
+        _, smoothness, metallic = MATERIALS[index]
+        self.set_object_material(smoothness=smoothness, metallic=metallic)
+
+    def toggle_eyedropper(self) -> None:
+        """Eyedropper button: pick one colour, then go back to the tool in hand."""
+        if self.tool == "eyedropper":
+            self.set_tool(self._before_eyedropper)
+            return
+        self._before_eyedropper = self.tool
+        self.set_tool("eyedropper")
+
     def set_object_material(self, smoothness: float | None = None, metallic: float | None = None) -> None:
         obj = self.scene.selected()
         if obj is None:
@@ -515,6 +445,7 @@ class EditorWindow(QMainWindow, EditingTools):
             panel.refresh()
         self.undo_button.setEnabled(bool(self._undo) or self.magic_stage() == "refine")
         self.redo_button.setEnabled(bool(self._redo) or self.magic_stage() == "refine")
+        self.history_button.setEnabled(bool(self._undo or self._redo))
         active = "select:magic" if self.tool in self.MAGIC_TOOLS else self.tool
         for tool, button in getattr(self, "select_buttons", {}).items():
             button.setChecked(active == tool)
@@ -525,7 +456,6 @@ class EditorWindow(QMainWindow, EditingTools):
         self.commit_text_box()
         self.commit_live_shape()
         self.scene.set_view(mode)
-        self.view_2d.setChecked(mode == "2d")
         self.view_3d.setChecked(mode == "orbit")
         if mode == "2d":
             self.fit_to_window()
@@ -555,18 +485,24 @@ class EditorWindow(QMainWindow, EditingTools):
         if scale <= 0:
             return
         self.scene.camera.dolly((percent / 100.0) / scale)
-        self.zoom_label.setText(f"{percent}%")
+        self.zoom_changed()
         self.stage.update()
+
+    def set_zoom_percent(self, percent: int) -> None:
+        self._zoom_slider_moved(percent)
 
     def zoom_changed(self) -> None:
         percent = int(round(self.stage.canvas_scale() * 100))
         self.zoom_slider.blockSignals(True)
         self.zoom_slider.setValue(max(10, min(800, percent)))
         self.zoom_slider.blockSignals(False)
-        self.zoom_label.setText(f"{percent}%")
+        self.zoom_box.blockSignals(True)
+        self.zoom_box.setValue(max(10, min(800, percent)))
+        self.zoom_box.blockSignals(False)
 
     def set_perspective(self, on: bool) -> None:
         """Toggle the 3D workspace between perspective and orthographic."""
+        settings.save("show_perspective", on)
         self.scene.camera.set_perspective(on)
         self.stage.update()
 
@@ -588,7 +524,32 @@ class EditorWindow(QMainWindow, EditingTools):
 
     # ---- undo ----------------------------------------------------------
 
+    def set_recording(self, on: bool) -> None:
+        if on:
+            self.recorder.start()
+            self.recorder.capture(self.canvas.pixels)
+        else:
+            self.recorder.stop()
+
+    def export_history_video(self) -> None:
+        """Export as video: the recorded edits as a time-lapse."""
+        if ffmpeg_available():
+            default, filters = "history.mp4", "MP4 video (*.mp4);;Animated GIF (*.gif)"
+        else:
+            default, filters = "history.gif", "Animated GIF (*.gif)"
+        path, _ = QFileDialog.getSaveFileName(self, "Export as video", default, filters)
+        if not path:
+            return
+        if not path.lower().endswith((".mp4", ".gif")):
+            path += ".mp4" if ffmpeg_available() else ".gif"
+        try:
+            self.recorder.export(path, self.canvas.pixels)
+        except (OSError, ValueError) as error:
+            QMessageBox.information(self, "Couldn't save", str(error))
+
     def push_undo(self, canvas: bool = True, objects: bool = False) -> None:
+        # Each edit is a frame of the time-lapse, taken as the edit begins.
+        self.recorder.capture(self.canvas.pixels)
         entry = Undo(selected=self.scene.selected_index, background=self.canvas.background)
         if canvas:
             entry.pixels = self.canvas.pixels.copy()
@@ -621,6 +582,21 @@ class EditorWindow(QMainWindow, EditingTools):
         self.selection = None
         self.refresh_panels()
         self.stage.update()
+
+    def show_context_menu(self, global_pos) -> None:
+        chrome.context_menu(self).exec(global_pos)
+
+    def show_history(self) -> None:
+        flyout = chrome.history_flyout(self)
+        button = self.history_button
+        flyout.exec(button.mapToGlobal(button.rect().bottomLeft()))
+
+    def scrub_history(self, position: int) -> None:
+        """History slider: step undo or redo until the stack sits at position."""
+        while len(self._undo) > position and self._undo:
+            self.undo()
+        while len(self._undo) < position and self._redo:
+            self.redo()
 
     def undo(self) -> None:
         if self.magic is not None:
@@ -692,6 +668,17 @@ class EditorWindow(QMainWindow, EditingTools):
     def show_menu(self) -> None:
         self.stack.setCurrentIndex(1)
 
+    def open_save_as(self) -> None:
+        """Menu > Save as > Image: the export preview page."""
+        self.clear_selection()
+        self.commit_live_shape()
+        self.commit_text_box()
+        self.save_as_page.open_for()
+        self.stack.setCurrentWidget(self.save_as_page)
+
+    def close_save_as(self) -> None:
+        self.stack.setCurrentIndex(0)
+
     def hide_menu(self) -> None:
         self.stack.setCurrentIndex(0)
 
@@ -706,22 +693,74 @@ class EditorWindow(QMainWindow, EditingTools):
         self.hide_menu()
         self.set_view("2d")
 
+    def show_open_pane(self) -> None:
+        self.open_pane.rebuild()
+        self.menu_panes.setCurrentWidget(self.open_pane)
+
     def open_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open", "", "Images (*.png *.jpg *.jpeg *.bmp *.webp);;Clay3D scene (*.clay3d)"
+            self, "Open", "", f"{IMAGE_FILTER};;Clay3D scene (*.clay3d)"
         )
-        if not path:
+        if path:
+            self.open_path(path)
+
+    def open_path(self, path: str) -> None:
+        try:
+            if path.lower().endswith(".clay3d"):
+                scene = load_scene(path)
+            else:
+                canvas = load_image(path)
+        except (OSError, ValueError, KeyError):
+            QMessageBox.information(
+                self, "Can't read that file", "It may be invalid, or in a format we don't support."
+            )
             return
         self.push_undo(canvas=True, objects=True)
-        if path.endswith(".clay3d"):
-            self.scene = load_scene(path)
+        if path.lower().endswith(".clay3d"):
+            self.scene = scene
         else:
-            self.scene.canvas = load_image(path)
+            self.scene.canvas = canvas
         self.apply_paint_settings()
         self.stage.reload_canvas()
+        recent.remember(path)
         self.hide_menu()
         self.fit_to_window()
         self.refresh_panels()
+
+    def print_canvas(self) -> None:
+        """Menu > Print > 2D print: the picture, fitted to the page."""
+        from PySide6.QtPrintSupport import QPrintDialog, QPrinter
+
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        dialog = QPrintDialog(printer, self)
+        if dialog.exec() != QPrintDialog.DialogCode.Accepted:
+            return
+        self.clear_selection()
+        self.render_to_printer(printer)
+
+    def render_to_printer(self, printer) -> None:
+        pixels = np.ascontiguousarray(self.canvas.pixels)
+        height, width = pixels.shape[:2]
+        image = QImage(pixels.tobytes(), width, height, width * 4, QImage.Format.Format_RGBA8888)
+        painter = QPainter(printer)
+        page = painter.viewport()
+        scale = min(page.width() / width, page.height() / height)
+        target = QRectF(
+            page.x() + (page.width() - width * scale) / 2,
+            page.y() + (page.height() - height * scale) / 2,
+            width * scale, height * scale,
+        )
+        painter.drawImage(target, image)
+        painter.end()
+
+    def insert_image(self) -> None:
+        """Menu > Insert: an image placed on the canvas as a selection."""
+        pixels = self.choose_image("Insert")
+        if pixels is None:
+            return
+        self.hide_menu()
+        self.choose_select_tool("select:box")
+        self.place_image(pixels)
 
     def save_image_as(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -730,6 +769,7 @@ class EditorWindow(QMainWindow, EditingTools):
         if path:
             self.clear_selection()
             save_image(self.canvas, path)
+            recent.remember(path)
             self.hide_menu()
 
     def save_scene_as(self) -> None:
@@ -739,6 +779,7 @@ class EditorWindow(QMainWindow, EditingTools):
         if path:
             self.clear_selection()
             save_scene(self.scene, path)
+            recent.remember(path)
             self.hide_menu()
 
     def export_model(self) -> None:
@@ -885,7 +926,10 @@ class EditorWindow(QMainWindow, EditingTools):
         height = metrics.height() * len(lines)
         frame = QRectF(at.x() - 4, at.y() - 4, max(width, 40) + 8, height + 8)
         painter.setPen(QPen(QColor(ACCENT), 1.0, Qt.PenStyle.DashLine))
-        painter.setBrush(QColor(255, 255, 255, 40))
+        if box.background is not None:
+            painter.setBrush(QColor(*box.background[:3]))
+        else:
+            painter.setBrush(QColor(255, 255, 255, 40))
         painter.drawRect(frame)
         painter.setPen(QColor(*self.color[:3]))
         for index, line in enumerate(lines):
@@ -907,6 +951,18 @@ def _to_screen(points, stage: Stage) -> QPolygonF | None:
     return QPolygonF(screen)
 
 
+def use_host_file_dialogs() -> None:
+    """Open and save through the desktop's own file chooser.
+
+    Qt's xdg-desktop-portal theme hands file dialogs to the portal, which
+    shows the host's chooser (KDE, GNOME, ...). Where no portal answers, Qt
+    falls back to its built-in dialog. A theme the user set is left alone.
+    Must run before QApplication exists.
+    """
+    if sys.platform.startswith("linux") and not os.environ.get("QT_QPA_PLATFORMTHEME"):
+        os.environ["QT_QPA_PLATFORMTHEME"] = "xdgdesktopportal"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Clay3D - 2D and 3D paint")
     parser.add_argument("--capture", help="Save a window grab to PATH and exit")
@@ -921,6 +977,7 @@ def main(argv: list[str] | None = None) -> int:
     surface.setDepthBufferSize(24)
     QSurfaceFormat.setDefaultFormat(surface)
 
+    use_host_file_dialogs()
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("Clay3D")
     app.setDesktopFileName("Clay3D")

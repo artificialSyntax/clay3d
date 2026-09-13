@@ -53,6 +53,7 @@ class Stage(QOpenGLWidget):
         self._full_upload = True
         self._navigating = None
         self._last_mouse = QPoint()
+        self._right_press: QPoint | None = None   # a right click that has not moved yet
         self._cursor_at: QPointF | None = None
         self._space_held = False
         self._gizmo_drag: gizmo.Drag | None = None
@@ -91,6 +92,7 @@ class Stage(QOpenGLWidget):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self.overlay.setGeometry(self.rect())
+        self._place_controls()
 
     def update(self) -> None:
         """Repaint the scene and the chrome drawn over it together."""
@@ -112,6 +114,12 @@ class Stage(QOpenGLWidget):
         else:
             self._pending_upload = union(self._pending_upload, rect)
         self.update()
+
+    def set_quality(self, name: str) -> None:
+        self.makeCurrent()
+        self.renderer.set_quality(name)
+        self.doneCurrent()
+        self.reload_canvas()
 
     def reload_canvas(self) -> None:
         self._full_upload = True
@@ -176,6 +184,8 @@ class Stage(QOpenGLWidget):
             or (button == Qt.MouseButton.LeftButton and alt)
         ):
             self._navigating = "pan"
+            if button == Qt.MouseButton.RightButton:
+                self._right_press = pos.toPoint()
             return
         if button != Qt.MouseButton.LeftButton:
             return
@@ -201,7 +211,8 @@ class Stage(QOpenGLWidget):
 
         on_paper = at is not None and self.scene.canvas_contains(*at)
         # Magic select box handles sit on the paper's edge, half off it.
-        if at is None or not (on_paper or self.editor.magic_stage() == "box"):
+        box_open = self.editor.magic_stage() == "box" or self.editor.crop_box is not None
+        if at is None or not (on_paper or box_open):
             # Empty stage: a left drag out here orbits, as the original does.
             if self.scene.camera.mode == "orbit":
                 self._navigating = "orbit"
@@ -237,6 +248,14 @@ class Stage(QOpenGLWidget):
         pos = event.position()
         if self._navigating is not None:
             self._navigating = None
+            # A right click that did not drag opens the menu; a drag pans.
+            press, self._right_press = self._right_press, None
+            if (
+                event.button() == Qt.MouseButton.RightButton
+                and press is not None
+                and (pos.toPoint() - press).manhattanLength() <= 4
+            ):
+                self.editor.show_context_menu(self.mapToGlobal(pos.toPoint()))
             return
         if self._resizing_canvas:
             self._resizing_canvas = False
@@ -316,7 +335,53 @@ class Stage(QOpenGLWidget):
             self._space_held = True
             self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
             return
+        if self._view_key(event):
+            return
         super().keyPressEvent(event)
+
+    ARROWS = {
+        Qt.Key.Key_Left: (-1, 0), Qt.Key.Key_Right: (1, 0),
+        Qt.Key.Key_Up: (0, -1), Qt.Key.Key_Down: (0, 1),
+    }
+    KEY_PAN_STEP = 40        # screen px per arrow press
+    KEY_ORBIT_STEP = 0.08    # radians per arrow press
+
+    def _view_key(self, event) -> bool:
+        """The Controls card's keyboard mappings: Home, Page Up/Down, Alt/Ctrl + arrows."""
+        key, mods = event.key(), event.modifiers()
+        if key == Qt.Key.Key_Home:
+            self.editor.fit_to_window()
+        elif key == Qt.Key.Key_PageUp:
+            self.editor.zoom_by(1.25)
+        elif key == Qt.Key.Key_PageDown:
+            self.editor.zoom_by(0.8)
+        elif key in self.ARROWS and mods & Qt.KeyboardModifier.AltModifier:
+            dx, dy = self.ARROWS[key]
+            # Arrow points where the view looks, so the paper moves the other way.
+            self.scene.camera.pan_by(-dx * self.KEY_PAN_STEP, -dy * self.KEY_PAN_STEP,
+                                     self.width(), self.height())
+        elif (key in self.ARROWS and mods & Qt.KeyboardModifier.ControlModifier
+              and self.scene.camera.mode == "orbit"):
+            dx, dy = self.ARROWS[key]
+            self.scene.camera.orbit(-dx * self.KEY_ORBIT_STEP, dy * self.KEY_ORBIT_STEP)
+        else:
+            return False
+        self.update()
+        return True
+
+    def show_controls(self, visible: bool) -> None:
+        from Clay3D.controls_help import ControlsCard
+
+        if getattr(self, "controls_card", None) is None:
+            self.controls_card = ControlsCard(self, lambda: self.show_controls(False))
+        self.controls_card.setVisible(visible)
+        self._place_controls()
+
+    def _place_controls(self) -> None:
+        card = getattr(self, "controls_card", None)
+        if card is not None:
+            card.move(18, self.height() - card.height() - 18)
+            card.raise_()
 
     def keyReleaseEvent(self, event) -> None:
         if event.key() == Qt.Key.Key_Space:
@@ -398,6 +463,9 @@ class Overlay(QWidget):
         if stage == "box":
             self._draw_selection_box(painter, self.editor.magic.box, dim=True)
             return
+        if self.editor.crop_box is not None:
+            self._draw_selection_box(painter, self.editor.crop_box, dim=True)
+            return
         if stage == "refine":
             self._dim_around_cutout(painter)
             self._draw_magic_stroke(painter)
@@ -438,7 +506,8 @@ class Overlay(QWidget):
             return
         polygon = QPolygonF(corners)
         magic_box = self.editor.magic_stage() == "box"
-        if dim and (magic_box or self.editor.tool == "select:crop"):
+        cropping = self.editor.crop_box is not None
+        if dim and (magic_box or cropping):
             whole = QPainterPath()
             whole.addRect(QRectF(self.rect()))
             keep = QPainterPath()
@@ -446,6 +515,8 @@ class Overlay(QWidget):
             painter.fillPath(whole.subtracted(keep), DIM_OUTSIDE)
         if magic_box:
             handles = self.editor.magic_box_handles()
+        elif cropping:
+            handles = self.editor.crop_handles()
         else:
             handles = handles_for_box(box, self.editor._handle_reach())
         self._draw_box_chrome(painter, polygon, handles, y0)
