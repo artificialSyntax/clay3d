@@ -229,7 +229,6 @@ class EditorWindow(QMainWindow, EditingTools, DocumentActions):
     def _install_shortcuts(self) -> None:
         for keys, handler in (
             (QKeySequence.StandardKey.Undo, self.undo),
-            (QKeySequence.StandardKey.Redo, self.redo),
             (QKeySequence.StandardKey.New, self.new_document),
             (QKeySequence.StandardKey.Open, self.open_file),
             (QKeySequence.StandardKey.Save, self.save_document),
@@ -241,6 +240,9 @@ class EditorWindow(QMainWindow, EditingTools, DocumentActions):
         ):
             shortcut = QShortcut(QKeySequence(keys), self, handler)
             shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        # Redo is spelled out rather than StandardKey.Redo: that already means
+        # Ctrl+Shift+Z here (and Ctrl+Y elsewhere), and a key bound twice is
+        # ambiguous to Qt, which then runs neither.
         for text, handler in (
             ("Ctrl+Y", self.redo),
             ("Ctrl+Shift+Z", self.redo),
@@ -256,22 +258,6 @@ class EditorWindow(QMainWindow, EditingTools, DocumentActions):
         ):
             shortcut = QShortcut(QKeySequence(text), self, handler)
             shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
-
-    def keyPressEvent(self, event) -> None:
-        ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
-        shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
-        if ctrl and event.key() == Qt.Key.Key_Y:
-            self.redo()
-            event.accept()
-            return
-        if ctrl and event.key() == Qt.Key.Key_Z:
-            if shift:
-                self.redo()
-            else:
-                self.undo()
-            event.accept()
-            return
-        super().keyPressEvent(event)
 
     # ---- categories and settings ---------------------------------------
 
