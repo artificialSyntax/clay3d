@@ -12,6 +12,7 @@ import numpy as np
 from PIL import Image
 
 from Clay3D.canvas2d import Canvas
+from Clay3D.effects import DEFAULT_EFFECT, effect_key
 from Clay3D.scene3d import Mesh, Scene, SceneObject, Transform
 
 SCENE_FORMAT = "clay3d-scene"
@@ -173,7 +174,7 @@ def load_scene(path: str | Path) -> Scene:
         scene.camera.distance = camera.get("distance", 8.0)
         scene.camera.zoom = camera.get("zoom", 1.0)
         scene.camera.target = np.array(camera.get("target", [0, 0, 0]), dtype=float)
-        scene.effect = manifest.get("effect", "none")
+        scene.effect = effect_key(manifest.get("effect", DEFAULT_EFFECT))
         scene.light_rotation = manifest.get("light_rotation", 0.0)
         scene.show_canvas = manifest.get("show_canvas", True)
 

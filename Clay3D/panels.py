@@ -140,7 +140,7 @@ class ShapesPanel(PanelBody):
         self.add(self.lines)
         self.add(rule())
 
-        holder, self.line_type = labelled_combo("Line type", ("Solid color", "None"))
+        holder, self.line_type = labelled_combo("Line type", ("Solid", "None"))
         self.line_type.currentIndexChanged.connect(self._style_changed)
         self.add(holder)
         self.thickness = SliderRow("Thickness", *SHAPE_THICKNESS_RANGE, editor.size, " px")
@@ -149,7 +149,7 @@ class ShapesPanel(PanelBody):
         self.opacity = SliderRow("Opacity", 0, 100, editor.opacity * 100, "%")
         self.opacity.changed.connect(lambda v: editor.set_opacity(v / 100.0))
         self.add(self.opacity)
-        holder, self.fill = labelled_combo("Fill", ("Solid color", "None"))
+        holder, self.fill = labelled_combo("Fill", ("Solid", "None"))
         self.fill.currentIndexChanged.connect(self._style_changed)
         self.add(holder)
         self.add(rule())
@@ -357,13 +357,17 @@ class TextPanel(PanelBody):
         align_row = QHBoxLayout()
         align_row.setSpacing(2)
         align_group = QButtonGroup(self)
-        for key, icon_name in (("left", "align-left"), ("center", "align-center"), ("right", "align-right")):
+        for key, icon_name, tip in (
+            ("left", "align-left", "Left align text"),
+            ("center", "align-center", "Center your text"),
+            ("right", "align-right", "Right align text"),
+        ):
             button = QToolButton()
             button.setProperty("role", "tile")
             button.setCheckable(True)
             button.setChecked(key == "left")
             button.setIcon(icons.ui_icon(icon_name, 18))
-            button.setToolTip(f"Align {key}")
+            button.setToolTip(tip)
             button.clicked.connect(lambda checked=False, k=key: editor.set_text_style(align=k))
             align_group.addButton(button)
             align_row.addWidget(button)
@@ -396,11 +400,11 @@ class TextPanel(PanelBody):
         self.finish()
 
     def _choose_background(self) -> None:
-        from Clay3D.widgets import ColorPickerPopup
+        from Clay3D.widgets import ColorPickerDialog
 
-        picker = ColorPickerPopup((*self._background, 255), self)
-        picker.picked.connect(self._background_picked)
-        picker.popup_at(self.background_chip)
+        rgb = ColorPickerDialog.choose(self._background, ColorPickerDialog.EDIT_TITLE, self)
+        if rgb is not None:
+            self._background_picked(rgb)
 
     def _background_picked(self, rgb) -> None:
         self._background = tuple(rgb)
@@ -544,8 +548,8 @@ class SelectPanel(PanelBody):
     ADD_HINT = "Missing something? Mark any unselected areas to add them to your cutout."
     REMOVE_HINT = "Too much selected? Mark unwanted areas to remove them from your cutout."
     CROP_RATIOS = (
-        ("free", "Custom"), ("1:1", "1:1"), ("16:9", "16:9"), ("3:2", "3:2"),
-        ("4:3", "4:3"), ("5:3", "5:3"), ("9:16", "9:16"),
+        ("16:9", "16:9"), ("5:3", "5:3"), ("3:2", "3:2"), ("4:3", "4:3"),
+        ("1:1", "1:1"), ("9:16", "9:16"), ("free", "Custom"),
     )
 
     def __init__(self, editor):
@@ -564,6 +568,7 @@ class SelectPanel(PanelBody):
         part, layout = _column()
         self.size_readout = QLabel()
         self.size_readout.setProperty("role", "value")
+        self.size_readout.setToolTip("Selection size")
         layout.addWidget(self.size_readout)
 
         layout.addWidget(section("Select"))
@@ -701,8 +706,11 @@ class SelectPanel(PanelBody):
             self.size_readout.setText("")
         else:
             width, height = int(frame[2] - frame[0]), int(frame[3] - frame[1])
-            self.size_readout.setText(f"Selection size  {width} × {height} px")
+            self.size_readout.setText(f"W: {width} px    H: {height} px")
         if cropping:
+            self.crop_ratio.blockSignals(True)
+            self.crop_ratio.setCurrentIndex(self.crop_ratio.findData(self.editor.crop_ratio))
+            self.crop_ratio.blockSignals(False)
             x0, y0, x1, y1 = self.editor.crop_box
             self.crop_width.setText(f"{int(round(x1 - x0))} px")
             self.crop_height.setText(f"{int(round(y1 - y0))} px")

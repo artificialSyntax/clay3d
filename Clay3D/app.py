@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from Clay3D import brushes, chrome, icons, recent, selection, settings, shapes2d
+from Clay3D import brushes, chrome, icons, recent, selection, settings, shapes2d, stickers
 from Clay3D.canvas2d import Canvas
 from Clay3D.io_files import IMAGE_FILTER, load_image, load_scene
 from Clay3D.document import DocumentActions, recovered_projects, recovery_dir
@@ -215,7 +215,7 @@ class EditorWindow(QMainWindow, EditingTools, DocumentActions):
         self.compact_header.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
         self.compact_header.setIconSize(QSize(24, 24))
         self.compact_header.setFixedHeight(chrome.COMPACT_HEADER_HEIGHT)
-        self.compact_header.setToolTip("Show or hide the sidebar")
+        self.compact_header.setToolTip("Sidebar")
         self.compact_header.clicked.connect(lambda checked=False: self.toggle_compact_panel())
         self.compact_header.hide()
         box.addWidget(self.compact_header)
@@ -352,7 +352,7 @@ class EditorWindow(QMainWindow, EditingTools, DocumentActions):
             "Brushes": "marker",
             "2D shapes": "shape:rectangle",
             "3D shapes": "shape3d:cube",
-            "Stickers": "sticker:smile",
+            "Stickers": f"sticker:{stickers.CATALOG[0][0]}",
             "Text": "text",
             "Effects": "none",
             "Canvas": "canvas",
@@ -365,7 +365,7 @@ class EditorWindow(QMainWindow, EditingTools, DocumentActions):
     def _tool_belongs_to(self, category: str) -> bool:
         prefixes = {
             "Brushes": ("marker", "calligraphy", "oil", "watercolor", "pixel", "pencil",
-                        "eraser", "crayon", "spray", "smudge", "fill", "eyedropper"),
+                        "eraser", "crayon", "spray", "fill", "eyedropper"),
             "2D shapes": ("shape:", "line:"),
             "3D shapes": ("shape3d:", "doodle_", "tube"),
             "Stickers": ("sticker:",),
@@ -578,7 +578,7 @@ class EditorWindow(QMainWindow, EditingTools, DocumentActions):
         try:
             self.recorder.export(path, self.canvas.pixels)
         except (OSError, ValueError) as error:
-            QMessageBox.information(self, "Couldn't save", str(error))
+            QMessageBox.information(self, "Sorry, that didn't work.", str(error))
 
     def push_undo(self, canvas: bool = True, objects: bool = False) -> None:
         # Each edit is a frame of the time-lapse, taken as the edit begins.
@@ -781,7 +781,7 @@ class EditorWindow(QMainWindow, EditingTools, DocumentActions):
                 canvas = load_image(path)
         except (OSError, ValueError, KeyError):
             QMessageBox.information(
-                self, "Can't read that file", "It may be invalid, or in a format we don't support."
+                self, "Can't read that file", "It may be invalid, or in a format we don’t support."
             )
             return False
         self.push_undo(canvas=True, objects=True)
@@ -834,17 +834,9 @@ class EditorWindow(QMainWindow, EditingTools, DocumentActions):
         self.choose_select_tool("select:box")
         self.place_image(pixels)
 
-    def save_image_as(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save image", f"{Path(self.document_name()).stem}.png",
-            "PNG (*.png);;JPEG (*.jpg);;BMP (*.bmp)",
-        )
-        if path:
-            self.write_document(path)
-
     def save_scene_as(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save scene", f"{Path(self.document_name()).stem}.clay3d", "Clay3D project (*.clay3d)"
+            self, "Save as Clay3D project", f"{Path(self.document_name()).stem}.clay3d", "Clay3D project (*.clay3d)"
         )
         if path:
             if not path.lower().endswith(".clay3d"):
@@ -856,14 +848,15 @@ class EditorWindow(QMainWindow, EditingTools, DocumentActions):
 
         from Clay3D.io_files import MODEL_FORMATS
 
+        if not self.scene.objects:
+            # The original's words for the same empty case under 3D print.
+            QMessageBox.information(self, "Can't save an empty project", "Try adding a shape or two!")
+            return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export 3D model", "model.obj",
+            self, "Save as copy", "model.obj",
             ";;".join(caption for _, caption in MODEL_FORMATS),
         )
         if not path:
-            return
-        if not self.scene.objects:
-            QMessageBox.information(self, "Nothing to export", "The scene has no 3D objects.")
             return
         if self.write_file(path, lambda temp: save_model(self.scene, temp)):
             self.hide_menu()
@@ -899,16 +892,9 @@ class EditorWindow(QMainWindow, EditingTools, DocumentActions):
                 ).copy()
                 painter.drawImage(QRectF(top_left, bottom_right), qimage)
         elif shape.points:
-            path = shapes2d.line_path(shape.kind, shape.points + [shape.end])
-            polygon = _to_screen(path, stage)
+            polygon = _to_screen(shapes2d.line_path(shape.kind, shape.points), stage)
             if polygon is not None:
                 painter.drawPolyline(polygon)
-            painter.setPen(QPen(QColor(ACCENT), 1.2))
-            painter.setBrush(QColor("#FFFFFF"))
-            for point in shape.points:
-                at = stage.canvas_to_screen(*point)
-                if at is not None:
-                    painter.drawEllipse(at, 4, 4)
         else:
             for part in shapes2d.contours(shape.kind, *shape.start, *shape.end):
                 polygon = _to_screen(part, stage)
@@ -931,9 +917,10 @@ class EditorWindow(QMainWindow, EditingTools, DocumentActions):
         ]
         if any(c is None for c in corners):
             return
-        painter.setPen(QPen(QColor(ACCENT), 1.2, Qt.PenStyle.DashLine))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawPolygon(QPolygonF(corners))
+        if not shape.points:
+            painter.setPen(QPen(QColor(ACCENT), 1.2, Qt.PenStyle.DashLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPolygon(QPolygonF(corners))
         painter.setPen(QPen(QColor("#C5C5C5"), 1.2))
         painter.setBrush(QColor("#FFFFFF"))
         for name, (hx, hy) in handles.items():

@@ -25,8 +25,8 @@ CARD_SIZE = (396, 194)
 
 MAPPINGS = {
     "Mouse": (
-        ("orbit", "Orbit", "Press and hold Left Mouse button and drag on the empty stage to orbit around your model."),
-        ("hand", "Pan", "Press and hold Right or Middle Mouse button, or hold Alt with the Left button, and drag to pan."),
+        ("orbit", "Orbit", "Press and hold Left Mouse button and drag to orbit around your model."),
+        ("hand", "Pan", "Press and hold Right Mouse button and drag to pan across your model."),
         ("zoom-in", "Zoom", "Scroll your wheel up or down to zoom in or out."),
         ("rotate-ccw", "Reset", "Double click to reset your view."),
     ),

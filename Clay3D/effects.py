@@ -1,35 +1,53 @@
-"""Effects tab filters. 22 swatches from ViewerFilter.Hex. Band amounts are ours."""
+"""Effects tab filters: the original's names, swatches and order. Band amounts are ours."""
 
 from __future__ import annotations
 
 import colorsys
 from dataclasses import dataclass
 
-# Filter swatches, in panel order.
-FILTER_HEXES = (
-    ("filter1", "#c4e5e8"),
-    ("filter2", "#e7d9ec"),
-    ("filter3", "#94ae99"),
-    ("filter4", "#73a1ec"),
-    ("filter5", "#e3e6f2"),
-    ("filter6", "#d0dad9"),
-    ("filter7", "#eedde5"),
-    ("filter8", "#c4e8e1"),
-    ("filter9", "#e0beb4"),
-    ("filter10", "#9999b2"),
-    ("filter11", "#e9ddbc"),
-    ("filter12", "#7b8a94"),
-    ("filter13", "#7c8181"),
-    ("filter14", "#8a7463"),
-    ("filter15", "#daefd9"),
-    ("filter16", "#e9b977"),
-    ("filter17", "#190b1c"),
-    ("filter18", "#1e0a69"),
-    ("filter19", "#1e2424"),
-    ("filter20", "#8e190f"),
-    ("filter21", "#5b665d"),
-    ("filter22", "#d9e1e5"),
+# key, label, swatch: the original's filters in its order. Default is the
+# plain look; the last six are the Minecraft set, listed after the rest.
+FILTERS = (
+    ("default", "Default", "#d9e1e5"),
+    ("lavender", "Lavender", "#e3e6f2"),
+    ("candy", "Candy", "#eedde5"),
+    ("taffy", "Taffy", "#e7d9ec"),
+    ("spearmint", "Spearmint", "#daefd9"),
+    ("sand", "Sand", "#e9ddbc"),
+    ("tan", "Tan", "#e0beb4"),
+    ("honey", "Honey", "#e9b977"),
+    ("mist", "Mist", "#d0dad9"),
+    ("aqua", "Aqua", "#c4e8e1"),
+    ("sky", "Sky", "#c4e5e8"),
+    ("canterbury", "Canterbury", "#9999b2"),
+    ("spruce", "Spruce", "#94ae99"),
+    ("stone", "Stone", "#7b8a94"),
+    ("stratus", "Stratus", "#7c8181"),
+    ("clay", "Clay", "#8a7463"),
+    ("minecraft_day", "Day (Minecraft)", "#73a1ec"),
+    ("minecraft_night", "Night (Minecraft)", "#190b1c"),
+    ("minecraft_underwater", "Underwater (Minecraft)", "#1e0a69"),
+    ("minecraft_cave", "Cave (Minecraft)", "#1e2424"),
+    ("minecraft_nether", "Nether (Minecraft)", "#8e190f"),
+    ("minecraft_end", "The End (Minecraft)", "#5b665d"),
 )
+
+DEFAULT_EFFECT = "default"
+
+# Keys used by older Clay3D scenes, matched to the filter with the same swatch.
+LEGACY_KEYS = {
+    "none": "default", "filter1": "sky", "filter2": "taffy", "filter3": "spruce", "filter4": "minecraft_day",
+    "filter5": "lavender", "filter6": "mist", "filter7": "candy", "filter8": "aqua", "filter9": "tan",
+    "filter10": "canterbury", "filter11": "sand", "filter12": "stone", "filter13": "stratus", "filter14": "clay",
+    "filter15": "spearmint", "filter16": "honey", "filter17": "minecraft_night", "filter18": "minecraft_underwater",
+    "filter19": "minecraft_cave", "filter20": "minecraft_nether", "filter21": "minecraft_end", "filter22": "default",
+}
+
+
+def effect_key(name: str) -> str:
+    """Today's key for a stored effect name, old scenes included."""
+    return LEGACY_KEYS.get(name, name if name in EFFECTS else DEFAULT_EFFECT)
+
 
 Band = tuple[float, float, float]  # shadows, midtones, highlights
 
@@ -50,7 +68,7 @@ class Effect:
     strength: float = 0.0
 
 
-def _from_hex(name: str, hex_colour: str) -> Effect:
+def _from_hex(name: str, label: str, hex_colour: str) -> Effect:
     """Turn a filter's swatch into band settings.
 
     The swatch is the light the filter puts the scene in, so its hue
@@ -70,7 +88,7 @@ def _from_hex(name: str, hex_colour: str) -> Effect:
     sat = 1.15 + saturation * 0.85
     return Effect(
         name=name,
-        label=f"Filter {name.removeprefix('filter')}",
+        label=label,
         swatch=rgb,
         colour_filter_hue=round(hue, 4),
         colour_filter_density=(
@@ -88,8 +106,8 @@ def _from_hex(name: str, hex_colour: str) -> Effect:
     )
 
 
-_ALL = (Effect("none", "None"),) + tuple(
-    _from_hex(name, hex_colour) for name, hex_colour in FILTER_HEXES
+_ALL = (Effect("default", "Default", swatch=(217 / 255, 225 / 255, 229 / 255)),) + tuple(
+    _from_hex(name, label, hex_colour) for name, label, hex_colour in FILTERS[1:]
 )
 
 EFFECTS: dict[str, Effect] = {effect.name: effect for effect in _ALL}

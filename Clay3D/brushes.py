@@ -26,7 +26,6 @@ class Brush:
     density     fraction of the footprint that gets any paint (spray can)
     build_up    True: overlapping stamps darken. False: a stroke is flat.
     erases      paint back to the canvas background instead of the color
-    smudges     drag existing pixels instead of depositing color
     """
 
     name: str
@@ -40,7 +39,6 @@ class Brush:
     density: float = 1.0
     build_up: bool = False
     erases: bool = False
-    smudges: bool = False
 
 
 CATALOG: dict[str, Brush] = {
@@ -95,13 +93,10 @@ CATALOG: dict[str, Brush] = {
         build_up=True,
     ),
     "eraser": Brush("eraser", "Eraser", shape="square", softness=0.05, erases=True),
-    "smudge": Brush("smudge", "Smudger", flow=0.55, spacing=0.05, smudges=True),
 }
 
 # The Brushes panel, in the original's order. Fill is a click tool rather
 # than a stamp brush, so the app appends it to the panel itself.
-#
-# Smudger stays in CATALOG but not the panel; Paint 3D's panel has no smudge.
 PANEL_ORDER = (
     "marker",
     "calligraphy",

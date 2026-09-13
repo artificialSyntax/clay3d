@@ -394,9 +394,6 @@ class OpenPane(QWidget):
         self.column.addWidget(caption)
         self.grid_holder = QWidget()
         self.column.addWidget(self.grid_holder)
-        self.empty = QLabel("Files you open or save show up here.")
-        self.empty.setProperty("role", "value")
-        self.column.addWidget(self.empty)
         self.column.addStretch(1)
 
     def rebuild(self) -> None:
@@ -415,7 +412,6 @@ class OpenPane(QWidget):
         self.recovered_holder.setVisible(bool(rescued))
         files = recent.recent_files()
         self.grid_holder = self._replace_grid(self.grid_holder, files, self.editor.open_path)
-        self.empty.setVisible(not files)
 
     def _replace_grid(self, old: QWidget, paths, open_one, recovered: bool = False) -> QWidget:
         from PySide6.QtWidgets import QGridLayout
@@ -489,12 +485,18 @@ def _hint(text: str) -> QLabel:
 
 def _save_as_pane(editor) -> QWidget:
     pane, column = _pane("Save as")
-    for label, hint, handler in (
-        ("Image", "PNG, JPEG, BMP, GIF or TIFF, with a preview", editor.open_save_as),
-        ("3D model", "OBJ, PLY, STL or glTF", editor.export_model),
-        ("Clay3D project", "Canvas and 3D objects, editable later", editor.save_scene_as),
-    ):
-        button = QPushButton(f"{label}\n{hint}")
+    project = QPushButton("Save as Clay3D project\nYou'll be able to edit this project in Clay3D later")
+    project.setProperty("role", "saveChoice")
+    project.clicked.connect(lambda checked=False: editor.save_scene_as())
+    column.addWidget(project)
+    column.addSpacing(16)
+    caption = QLabel("Save as copy")
+    caption.setProperty("role", "section")
+    column.addWidget(caption)
+    column.addWidget(_hint("Choose a file format"))
+    # The original's third choice, Video, is a 3D animation export Clay3D doesn't have.
+    for label, handler in (("Image", editor.open_save_as), ("3D model", editor.export_model)):
+        button = QPushButton(label)
         button.setProperty("role", "saveChoice")
         button.clicked.connect(lambda checked=False, fn=handler: fn())
         column.addWidget(button)

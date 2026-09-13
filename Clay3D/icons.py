@@ -9,7 +9,6 @@ from PySide6.QtCore import QByteArray, QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QBrush,
     QColor,
-    QConicalGradient,
     QIcon,
     QLinearGradient,
     QPainter,
@@ -134,15 +133,9 @@ def line_icon(kind: str, size: int = 40) -> QIcon:
     p.setPen(_pen(ACCENT, max(1.4, s * 0.06)))
     if kind == "straight":
         p.drawLine(QPointF(s * 0.18, s * 0.78), QPointF(s * 0.82, s * 0.22))
-    elif kind == "curve":
-        path = QPainterPath(QPointF(s * 0.16, s * 0.74))
-        path.cubicTo(QPointF(s * 0.36, s * 0.16), QPointF(s * 0.64, s * 0.86), QPointF(s * 0.84, s * 0.26))
-        p.drawPath(path)
     else:
-        p.drawPolyline(QPolygonF([
-            QPointF(s * 0.16, s * 0.74), QPointF(s * 0.40, s * 0.26),
-            QPointF(s * 0.64, s * 0.62), QPointF(s * 0.86, s * 0.30),
-        ]))
+        points = [(point.x(), point.y()) for point in _handle_points(kind, s)]
+        p.drawPolyline(QPolygonF([QPointF(x, y) for x, y in shapes2d.line_path(kind, points)]))
     p.setBrush(QColor("#FFFFFF"))
     p.setPen(_pen(SOFT, max(1.0, s * 0.035)))
     for point in _handle_points(kind, s):
@@ -151,11 +144,16 @@ def line_icon(kind: str, size: int = 40) -> QIcon:
 
 
 def _handle_points(kind: str, s: float) -> list[QPointF]:
+    """One handle per point: an S that bends once more with each extra point."""
     if kind == "straight":
         return [QPointF(s * 0.18, s * 0.78), QPointF(s * 0.82, s * 0.22)]
-    if kind == "curve":
-        return [QPointF(s * 0.16, s * 0.74), QPointF(s * 0.84, s * 0.26)]
-    return [QPointF(s * 0.16, s * 0.74), QPointF(s * 0.40, s * 0.26), QPointF(s * 0.86, s * 0.30)]
+    count = shapes2d.LINE_POINT_COUNTS[kind]
+    points = []
+    for i in range(count):
+        t = i / (count - 1)
+        wave = 0.20 * (1 if i % 2 else -1) if 0 < i < count - 1 else 0.0
+        points.append(QPointF(s * (0.16 + 0.68 * t), s * (0.74 - 0.48 * t + wave)))
+    return points
 
 
 # ---- 3D shapes ----------------------------------------------------------
@@ -282,7 +280,7 @@ def doodle_icon(mode: str, size: int = 44) -> QIcon:
 
 def effect_icon(name: str, size: int = 52) -> QIcon:
     """Run the filter's own maths over a test gradient: a real preview."""
-    effect = EFFECTS.get(name, EFFECTS["none"])
+    effect = EFFECTS.get(name, EFFECTS["default"])
     pixmap, p = _canvas(size)
     for y in range(size):
         for x in range(0, size, 2):
@@ -388,19 +386,3 @@ def sticker_icon(kind: str, size: int = 44) -> QIcon:
     pixmap, p = _canvas(size)
     stickers.draw(p, kind, float(size))
     return _finish(pixmap, p)
-
-
-def colour_wheel(size: int) -> QPixmap:
-    """The hue ring used by the colour picker."""
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pixmap)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    gradient = QConicalGradient(size / 2, size / 2, 90)
-    for i in range(13):
-        gradient.setColorAt(i / 12.0, QColor.fromHsvF((1.0 - i / 12.0) % 1.0, 1.0, 1.0))
-    p.setBrush(QBrush(gradient))
-    p.setPen(Qt.PenStyle.NoPen)
-    p.drawEllipse(QRectF(1, 1, size - 2, size - 2))
-    p.end()
-    return pixmap

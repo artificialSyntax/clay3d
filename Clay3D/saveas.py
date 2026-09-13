@@ -113,7 +113,7 @@ class SaveAsImagePage(QWidget):
         box.addWidget(heading("Preview"))
 
         self.file_type = QComboBox()
-        self.file_type.setToolTip("Choose a file type")
+        self.file_type.setToolTip("Save as type")
         for name, _, _ in EXPORT_TYPES:
             self.file_type.addItem(f"{name} (image)", name)
         self.file_type.currentIndexChanged.connect(self._type_changed)

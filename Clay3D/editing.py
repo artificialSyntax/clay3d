@@ -96,6 +96,10 @@ class LiveShape:
     source: str = "shape"
 
     def box(self) -> tuple[float, float, float, float]:
+        if self.points:
+            path = shapes2d.line_path(self.kind, self.points)
+            xs, ys = [x for x, _ in path], [y for _, y in path]
+            return (min(xs), min(ys), max(xs), max(ys))
         if self.pixels is not None:
             if self.size is not None:
                 width, height = self.size
@@ -114,7 +118,9 @@ class LiveShape:
 
     def contains(self, x: float, y: float) -> bool:
         x0, y0, x1, y1 = self.box()
-        return x0 <= x <= x1 and y0 <= y <= y1
+        # A thin line still needs something to grab.
+        pad = self.thickness / 2 + 6 if self.points else 0
+        return x0 - pad <= x <= x1 + pad and y0 - pad <= y <= y1 + pad
 
 
 class EditingTools:
@@ -149,14 +155,11 @@ class EditingTools:
             self._live_drag = "place"
             return None
         if tool.startswith("line:"):
-            kind = tool.split(":", 1)[1]
-            if self.live_shape is not None and self.live_shape.kind == kind and not self.live_shape.placed:
-                self.live_shape.points.append((x, y))
-                return None
             if self._begin_live_edit(x, y):
                 return None
+            kind = tool.split(":", 1)[1]
             self.live_shape = LiveShape(
-                kind, (x, y), (x, y), points=[(x, y)],
+                kind, (x, y), (x, y), points=shapes2d.line_points(kind, (x, y), (x, y)),
                 color=self.color, style=self.shape_style,
                 thickness=self.size, opacity=self.opacity, source="line",
             )
@@ -207,8 +210,7 @@ class EditingTools:
             return self.canvas.end_stroke()
         if self._editing_live_item():
             if self._live_drag == "place":
-                if not (self.live_shape.source == "line" and self.live_shape.kind != "straight"):
-                    self.live_shape.placed = True
+                self.live_shape.placed = True
             self._live_drag = None
             self.stage.update()
             return None
@@ -243,12 +245,8 @@ class EditingTools:
         self._live_drag = None
         if shape is None:
             return None
-        too_small = (
-            shape.pixels is None
-            and not shape.points
-            and abs(shape.end[0] - shape.start[0]) < 2
-            and abs(shape.end[1] - shape.start[1]) < 2
-        )
+        x0, y0, x1, y1 = shape.box()
+        too_small = shape.pixels is None and x1 - x0 < 2 and y1 - y0 < 2
         if too_small:
             return None
         self.push_undo()
@@ -262,8 +260,7 @@ class EditingTools:
         if shape.pixels is not None:
             rect = self._blit_live_sticker(shape)
         elif shape.points:
-            path = shapes2d.line_path(shape.kind, shape.points + [shape.end])
-            rect = self.canvas.stroke(path)
+            rect = self.canvas.stroke(shapes2d.line_path(shape.kind, shape.points))
         else:
             for part in shapes2d.contours(shape.kind, *shape.start, *shape.end):
                 if shape.style in ("both", "fill"):
@@ -304,7 +301,11 @@ class EditingTools:
         if self.live_shape is None or not self.live_shape.placed:
             return {}
         box = self.live_shape.box()
-        handles = handles_for_box(box, self._handle_reach())
+        if self.live_shape.source == "line":
+            # A line is edited by its points, named as the original names them.
+            handles = {f"Point {i + 1}": point for i, point in enumerate(self.live_shape.points)}
+        else:
+            handles = handles_for_box(box, self._handle_reach())
         x0, y0, x1, y1 = box
         handles["Stamp"] = ((x0 + x1) / 2.0, y1 + self._handle_reach() * 2.6)
         return handles
@@ -343,6 +344,8 @@ class EditingTools:
             return None
         if mode == "place":
             shape.end = (x, y)
+            if shape.source == "line":
+                shape.points = shapes2d.line_points(shape.kind, shape.start, shape.end)
             if shape.pixels is not None:
                 shape.start = (x, y)
                 shape.end = (x, y)
@@ -350,6 +353,8 @@ class EditingTools:
             ox, oy = self._drag_origin
             shape.move(x - ox, y - oy)
             self._drag_origin = (x, y)
+        elif mode.startswith("Point "):
+            shape.points[int(mode.split()[1]) - 1] = (x, y)
         else:
             self._resize_live_item(mode, x, y)
         self.stage.update()
@@ -716,7 +721,7 @@ class EditingTools:
         except (OSError, ValueError):
             if not getattr(self, "suppress_dialogs", False):
                 QMessageBox.information(
-                    self, "Can't read that file", "It may be invalid, or in a format we don't support."
+                    self, "Can't read that file", "Clay3D can't read this file. It may be invalid, or in a format we don't currently support."
                 )
             return None
 

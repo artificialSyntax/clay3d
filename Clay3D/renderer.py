@@ -15,7 +15,7 @@ from PySide6.QtOpenGL import (
 )
 
 from Clay3D import shaders
-from Clay3D.effects import EFFECTS
+from Clay3D.effects import DEFAULT_EFFECT, EFFECTS
 
 # PySide6 resolves setUniformValue(location, <python float>) to the int
 # overload, which GL rejects with INVALID_OPERATION and silently leaves
@@ -363,7 +363,7 @@ class SceneRenderer(QOpenGLFunctions):
             buffer.vao.release()
 
     def _apply_filter(self, scene) -> None:
-        effect = EFFECTS.get(scene.effect, EFFECTS["none"])
+        effect = EFFECTS.get(scene.effect, EFFECTS[DEFAULT_EFFECT])
         program = self.programs["filter"]
         program.bind()
         program.setUniformValue(program.uniformLocation("uScene"), 0)

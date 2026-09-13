@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QMouseEvent
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QIcon, QIntValidator, QLinearGradient, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
+    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSizePolicy,
     QSlider,
@@ -20,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from Clay3D import icons
-from Clay3D.theme import ACCENT, LINE, MATERIALS, PALETTE, PALETTE_COLUMNS
+from Clay3D.theme import ACCENT, INK, LINE, MATERIALS, PALETTE, PALETTE_COLUMNS
 
 
 def heading(text: str) -> QLabel:
@@ -199,7 +201,7 @@ class ColorSection(QWidget):
         self.chip = QToolButton()
         self.chip.setFixedSize(144, 48)
         self.chip.setToolTip("Edit color")
-        self.chip.clicked.connect(self._open_dialog)
+        self.chip.clicked.connect(self._edit_color)
         current.addWidget(self.chip)
         self.pipette = QToolButton()
         self.pipette.setFixedSize(72, 48)
@@ -223,7 +225,7 @@ class ColorSection(QWidget):
 
         add = QPushButton("Add color")
         add.setFixedHeight(36)
-        add.clicked.connect(self._open_dialog)
+        add.clicked.connect(self._add_color)
         box.addWidget(add)
         self._refresh()
 
@@ -232,10 +234,15 @@ class ColorSection(QWidget):
         self._refresh()
         self.picked.emit(self._color)
 
-    def _open_dialog(self) -> None:
-        picker = ColorPickerPopup(self._color, self)
-        picker.picked.connect(self._add_custom)
-        picker.popup_at(self)
+    def _edit_color(self) -> None:
+        rgb = ColorPickerDialog.choose(self._color, ColorPickerDialog.EDIT_TITLE, self)
+        if rgb is not None:
+            self._choose(rgb)
+
+    def _add_color(self) -> None:
+        rgb = ColorPickerDialog.choose(self._color, ColorPickerDialog.ADD_TITLE, self)
+        if rgb is not None:
+            self._add_custom(rgb)
 
     def _add_custom(self, rgb: tuple[int, int, int]) -> None:
         swatch = Swatch(rgb, 36)
@@ -265,70 +272,233 @@ class ColorSection(QWidget):
         self.chip.setToolTip(f"Edit color  #{r:02X}{g:02X}{b:02X}")
 
 
-class ColorPickerPopup(QWidget):
-    """HSV popup. Hue ring + sat/value sliders."""
+class SaturationValueSquare(QWidget):
+    """298 x 260: saturation left to right, brightness top to bottom, over the hue."""
 
-    picked = Signal(tuple)
+    changed = Signal()
 
-    def __init__(self, color: tuple[int, int, int, int], parent=None):
-        super().__init__(parent, Qt.WindowType.Popup)
-        self.setStyleSheet(f"background: white; color: #201F1E; border: 1px solid {LINE};")
-        qcolor = QColor(*color[:3])
-        self._h, self._s, self._v, _ = qcolor.getHsvF()
-        column = QVBoxLayout(self)
-        column.setContentsMargins(10, 10, 10, 10)
-        self.wheel = QLabel()
-        self.wheel.setPixmap(icons.colour_wheel(168))
-        self.wheel.setFixedSize(168, 168)
-        self.wheel.mousePressEvent = self._pick_hue
-        column.addWidget(self.wheel, alignment=Qt.AlignmentFlag.AlignCenter)
-        self.sat = SliderRow("Saturation", 0, 100, self._s * 100, "%")
-        self.sat.changed.connect(lambda v: self._set(s=v / 100.0))
-        column.addWidget(self.sat)
-        self.val = SliderRow("Brightness", 0, 100, self._v * 100, "%")
-        self.val.changed.connect(lambda v: self._set(v=v / 100.0))
-        column.addWidget(self.val)
+    def __init__(self, picker: "ColorPickerDialog"):
+        super().__init__()
+        self.picker = picker
+        self.setFixedSize(298, 260)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        rect = QRectF(self.rect())
+        painter.fillRect(rect, QColor.fromHsvF(self.picker.hue, 1.0, 1.0))
+        whites = QLinearGradient(rect.topLeft(), rect.topRight())
+        whites.setColorAt(0.0, QColor(255, 255, 255, 255))
+        whites.setColorAt(1.0, QColor(255, 255, 255, 0))
+        painter.fillRect(rect, whites)
+        blacks = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        blacks.setColorAt(0.0, QColor(0, 0, 0, 0))
+        blacks.setColorAt(1.0, QColor(0, 0, 0, 255))
+        painter.fillRect(rect, blacks)
+        # The 29 px selection ring.
+        at = QPointF(self.picker.saturation * self.width(), (1.0 - self.picker.value) * self.height())
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor("#000000"), 2))
+        painter.drawEllipse(at, 13.5, 13.5)
+        painter.setPen(QPen(QColor("#FFFFFF"), 2))
+        painter.drawEllipse(at, 11.5, 11.5)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        self._pick(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        self._pick(event)
+
+    def _pick(self, event: QMouseEvent) -> None:
+        x = min(max(event.position().x() / self.width(), 0.0), 1.0)
+        y = min(max(event.position().y() / self.height(), 0.0), 1.0)
+        self.picker.set_hsv(saturation=x, value=1.0 - y)
+
+
+class HueSlider(QWidget):
+    """The rainbow strip under the square."""
+
+    def __init__(self, picker: "ColorPickerDialog"):
+        super().__init__()
+        self.picker = picker
+        self.setFixedSize(298, 32)
+        self.setToolTip("Color")
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        track = QRectF(0, 8, self.width(), 16)
+        rainbow = QLinearGradient(track.topLeft(), track.topRight())
+        for step in range(7):
+            rainbow.setColorAt(step / 6, QColor.fromHsvF(min(step / 6, 0.9999), 1.0, 1.0))
+        painter.fillRect(track, rainbow)
+        x = self.picker.hue * self.width()
+        painter.setPen(QPen(QColor("#FFFFFF"), 2))
+        painter.setBrush(QColor.fromHsvF(self.picker.hue, 1.0, 1.0))
+        painter.drawEllipse(QPointF(min(max(x, 9.0), self.width() - 9.0), 16.0), 9.0, 9.0)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        self._pick(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        self._pick(event)
+
+    def _pick(self, event: QMouseEvent) -> None:
+        hue = min(max(event.position().x() / self.width(), 0.0), 0.9999)
+        self.picker.set_hsv(hue=hue)
+
+
+class ColorPickerDialog(QDialog):
+    """The original's colour dialog.
+
+    Title ("Choose a new color" or "Edit color"), the saturation/brightness
+    square with the hue strip under it, the chosen colour, Red, Green, Blue
+    and Hex boxes, then OK and Cancel.
+    """
+
+    ADD_TITLE = "Choose a new color"
+    EDIT_TITLE = "Edit color"
+
+    def __init__(self, color: tuple[int, ...], title: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setStyleSheet(f"QDialog {{ background: white; color: {INK}; }}")
+        self.hue, self.saturation, self.value, _ = QColor(*color[:3]).getHsvF()
+        self.hue = max(self.hue, 0.0)   # greys report hue -1
+        self._syncing = False
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(24, 28, 24, 24)
+        outer.setSpacing(0)
+        header = QLabel(title)
+        header.setStyleSheet("font-size: 15px;")
+        outer.addWidget(header)
+        outer.addSpacing(16)
+
+        body = QHBoxLayout()
+        body.setSpacing(0)
+        left = QVBoxLayout()
+        left.setSpacing(8)
+        self.square = SaturationValueSquare(self)
+        self.hue_slider = HueSlider(self)
+        left.addWidget(self.square)
+        left.addWidget(self.hue_slider)
+        body.addLayout(left)
+
+        right = QVBoxLayout()
+        right.setContentsMargins(24, 0, 0, 0)
+        right.setSpacing(0)
         self.preview = QLabel()
-        self.preview.setFixedHeight(28)
-        column.addWidget(self.preview)
-        apply = QPushButton("Use this color")
-        apply.clicked.connect(self._emit)
-        column.addWidget(apply)
-        self._paint_preview()
+        self.preview.setFixedSize(89, 89)
+        right.addWidget(self.preview)
+        right.addSpacing(4)
+        self.red = self._number_box(right, "Red")
+        self.green = self._number_box(right, "Green")
+        self.blue = self._number_box(right, "Blue")
+        self.hex = self._text_box(right, "Hex")
+        right.addStretch(1)
+        body.addLayout(right)
+        outer.addLayout(body)
+        outer.addSpacing(24)
 
-    def popup_at(self, widget: QWidget) -> None:
-        self.adjustSize()
-        self.move(widget.mapToGlobal(QPoint(0, widget.height())))
-        self.show()
+        buttons = QHBoxLayout()
+        buttons.setSpacing(12)
+        ok = QPushButton("OK")
+        ok.setProperty("role", "primary")
+        ok.setFixedHeight(48)
+        ok.setDefault(True)
+        ok.clicked.connect(self.accept)
+        cancel = QPushButton("Cancel")
+        cancel.setFixedHeight(48)
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(ok)
+        buttons.addWidget(cancel)
+        outer.addLayout(buttons)
+        self.setFixedWidth(463)
+        self._show_color()
 
-    def _pick_hue(self, event: QMouseEvent) -> None:
-        import math
+    @classmethod
+    def choose(cls, color: tuple[int, ...], title: str, parent=None) -> tuple[int, int, int] | None:
+        """Open the dialog; the colour picked, or None on Cancel."""
+        dialog = cls(color, title, parent)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dialog.rgb()
 
-        centre = 84.0
-        dx, dy = event.position().x() - centre, event.position().y() - centre
-        if math.hypot(dx, dy) < 8:
-            return
-        angle = (math.degrees(math.atan2(-dy, dx)) + 360.0) % 360.0
-        # Wheel is drawn from 90° (QConicalGradient), hue 0 at the top.
-        self._set(h=((90.0 - angle) % 360.0) / 360.0)
+    def rgb(self) -> tuple[int, int, int]:
+        color = QColor.fromHsvF(self.hue, self.saturation, self.value)
+        return (color.red(), color.green(), color.blue())
 
-    def _set(self, h=None, s=None, v=None) -> None:
-        if h is not None:
-            self._h = h
-        if s is not None:
-            self._s = s
-        if v is not None:
-            self._v = v
-        self._paint_preview()
+    def set_hsv(self, hue=None, saturation=None, value=None) -> None:
+        if hue is not None:
+            self.hue = hue
+        if saturation is not None:
+            self.saturation = saturation
+        if value is not None:
+            self.value = value
+        self._show_color()
 
-    def _paint_preview(self) -> None:
-        color = QColor.fromHsvF(self._h, max(0.0, min(1.0, self._s)), max(0.0, min(1.0, self._v)))
-        self.preview.setStyleSheet(f"background: {color.name()}; border: 1px solid {LINE};")
+    def set_rgb(self, rgb: tuple[int, int, int]) -> None:
+        hue, self.saturation, self.value, _ = QColor(*rgb).getHsvF()
+        if hue >= 0:
+            self.hue = hue
+        self._show_color()
 
-    def _emit(self) -> None:
-        color = QColor.fromHsvF(self._h, max(0.0, min(1.0, self._s)), max(0.0, min(1.0, self._v)))
-        self.picked.emit((color.red(), color.green(), color.blue()))
-        self.close()
+    # ---- boxes ------------------------------------------------------------
+
+    def _caption(self, column: QVBoxLayout, text: str) -> None:
+        caption = QLabel(text)
+        caption.setContentsMargins(0, 2, 0, 5)
+        column.addWidget(caption)
+
+    def _number_box(self, column: QVBoxLayout, text: str) -> QLineEdit:
+        self._caption(column, text)
+        box = QLineEdit()
+        box.setFixedSize(89, 28)
+        box.setToolTip(text)
+        box.setValidator(QIntValidator(0, 255, box))
+        box.textEdited.connect(lambda _t: self._rgb_typed())
+        column.addWidget(box)
+        return box
+
+    def _text_box(self, column: QVBoxLayout, text: str) -> QLineEdit:
+        self._caption(column, text)
+        box = QLineEdit()
+        box.setFixedSize(89, 28)
+        box.setToolTip(text)
+        box.setMaxLength(7)
+        box.textEdited.connect(self._hex_typed)
+        column.addWidget(box)
+        return box
+
+    def _rgb_typed(self) -> None:
+        values = [box.text() for box in (self.red, self.green, self.blue)]
+        if all(v.isdigit() for v in values):
+            self._from_typing(tuple(min(int(v), 255) for v in values))
+
+    def _hex_typed(self, text: str) -> None:
+        digits = text.lstrip("#")
+        if len(digits) == 6 and all(c in "0123456789abcdefABCDEF" for c in digits):
+            self._from_typing(tuple(int(digits[i : i + 2], 16) for i in (0, 2, 4)))
+
+    def _from_typing(self, rgb: tuple[int, int, int]) -> None:
+        # Keep what is being typed where it is; update everything else.
+        self._syncing = True
+        self.set_rgb(rgb)
+        self._syncing = False
+
+    def _show_color(self) -> None:
+        r, g, b = self.rgb()
+        self.preview.setStyleSheet(f"background: rgb({r},{g},{b}); border: 2px solid rgba(0,0,0,40);")
+        focused = self.focusWidget()
+        for box, text in (
+            (self.red, str(r)), (self.green, str(g)), (self.blue, str(b)), (self.hex, f"#{r:02X}{g:02X}{b:02X}"),
+        ):
+            if not (self._syncing and box is focused):
+                box.setText(text)
+        self.square.update()
+        self.hue_slider.update()
 
 
 class PanelBody(QWidget):

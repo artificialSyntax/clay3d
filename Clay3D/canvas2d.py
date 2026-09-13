@@ -145,8 +145,6 @@ class Canvas:
         return points
 
     def _lay_down(self, points: list[tuple[float, float]], heading: float) -> Rect | None:
-        if self._brush.smudges:
-            return self._smudge(points, heading)
         kernel = brushes.stamp(self._brush, self.radius, heading)
         half = kernel.shape[0] // 2
         rect = None
@@ -191,33 +189,6 @@ class Canvas:
             alpha = coverage * self._opacity * (self._color[3] / 255.0)
         blended = source * alpha + base * (1.0 - alpha)
         self.pixels[y0:y1, x0:x1] = np.clip(blended, 0, 255).astype(np.uint8)
-
-    def _smudge(self, points: list[tuple[float, float]], heading: float) -> Rect | None:
-        """Drag existing pixels along the stroke instead of adding color."""
-        kernel = brushes.stamp(self._brush, self.radius, heading)
-        half = kernel.shape[0] // 2
-        pull = max(1, int(round(self.radius * 0.35)))
-        dx = -int(round(math.cos(heading) * pull))
-        dy = -int(round(math.sin(heading) * pull))
-        rect = None
-        for x, y in points:
-            cx, cy = int(round(x)), int(round(y))
-            clip = _clip(cx - half, cy - half, cx + half + 1, cy + half + 1, self.width, self.height)
-            if clip is None:
-                continue
-            x0, y0, x1, y1 = clip
-            source = _shifted(self.pixels, x0, y0, x1, y1, dx, dy)
-            weight = (
-                kernel[y0 - (cy - half) : y1 - (cy - half), x0 - (cx - half) : x1 - (cx - half)]
-                * self._brush.flow
-                * self._opacity
-            )[:, :, None]
-            here = self.pixels[y0:y1, x0:x1].astype(np.float32)
-            mixed = source.astype(np.float32) * weight + here * (1.0 - weight)
-            self.pixels[y0:y1, x0:x1] = np.clip(mixed, 0, 255).astype(np.uint8)
-            rect = union(rect, (x0, y0, x1, y1))
-        self._stroke_rect = union(self._stroke_rect, rect)
-        return rect
 
     # ---- click tools ----------------------------------------------------
 
@@ -414,38 +385,6 @@ def _clip(x0: int, y0: int, x1: int, y1: int, width: int, height: int) -> Rect |
     return (x0, y0, x1, y1)
 
 
-def _shifted(pixels: np.ndarray, x0: int, y0: int, x1: int, y1: int, dx: int, dy: int) -> np.ndarray:
-    """The patch as it looks offset by (dx, dy), clamped at the edges."""
-    ys = np.clip(np.arange(y0, y1) + dy, 0, pixels.shape[0] - 1)
-    xs = np.clip(np.arange(x0, x1) + dx, 0, pixels.shape[1] - 1)
-    return pixels[np.ix_(ys, xs)]
-
-
-def _flood_spans(matches: np.ndarray, x: int, y: int) -> tuple[np.ndarray, Rect] | None:
-    height, width = matches.shape
-    filled = np.zeros((height, width), dtype=bool)
-    stack = [(x, y)]
-    min_x, max_x, min_y, max_y = x, x, y, y
-    while stack:
-        sx, sy = stack.pop()
-        if filled[sy, sx] or not matches[sy, sx]:
-            continue
-        left, right = _run_around(matches[sy] & ~filled[sy], sx, width)
-        filled[sy, left : right + 1] = True
-        min_x, max_x = min(min_x, left), max(max_x, right)
-        min_y, max_y = min(min_y, sy), max(max_y, sy)
-        for ny in (sy - 1, sy + 1):
-            if not (0 <= ny < height):
-                continue
-            row = matches[ny, left : right + 1] & ~filled[ny, left : right + 1]
-            starts = np.flatnonzero(row & ~np.concatenate(([False], row[:-1])))
-            stack.extend((left + int(s), ny) for s in starts)
-    if not filled.any():
-        return None
-    rect = (min_x, min_y, max_x + 1, max_y + 1)
-    return filled[min_y : max_y + 1, min_x : max_x + 1], rect
-
-
 def _paint_masked(pixels: np.ndarray, mask: np.ndarray, rect: Rect, color: Color, opacity: float) -> None:
     """Lay a flat colour over the masked pixels inside a rectangle.
 
@@ -462,15 +401,6 @@ def _paint_masked(pixels: np.ndarray, mask: np.ndarray, rect: Rect, color: Color
     source = np.array(color, dtype=np.float32)
     blended = np.clip(source * alpha + patch.astype(np.float32) * (1.0 - alpha), 0, 255).astype(np.uint8)
     np.copyto(patch, blended, where=where)
-
-
-def _run_around(row: np.ndarray, x: int, width: int) -> tuple[int, int]:
-    """The extent of the unbroken True run in `row` that contains x."""
-    blocked = np.flatnonzero(~row)
-    i = int(np.searchsorted(blocked, x))
-    left = 0 if i == 0 else int(blocked[i - 1]) + 1
-    right = width - 1 if i == len(blocked) else int(blocked[i]) - 1
-    return left, right
 
 
 def _polygon_mask(

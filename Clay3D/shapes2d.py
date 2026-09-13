@@ -6,39 +6,51 @@ import math
 
 # Name, label. Panel order; labels are Paint 3D's.
 SHAPE_TYPES = (
-    ("rectangle", "Square"),
     ("circle", "Circle"),
-    ("diamond", "Diamond"),
+    ("capsule", "Capsule"),
+    ("rectangle", "Square"),
+    ("round_rectangle", "Rounded Square"),
+    ("triangle", "Triangle"),
     ("pentagon", "Pentagon"),
     ("hexagon", "Hexagon"),
-    ("triangle", "Triangle"),
+    ("diamond", "Diamond"),
     ("right_triangle", "Right triangle"),
     ("arrow", "Arrow"),
-    ("four_point_star", "Star: 4 points"),
-    ("five_point_star", "Star: 5 points"),
-    ("six_point_star", "Star: 6 points"),
-    ("heart", "Heart"),
-    ("lightning", "Lightning bolt"),
-    ("round_rectangle", "Rounded Square"),
-    ("check_mark", "Check mark"),
-    ("capsule", "Capsule"),
     ("pointed_arrow", "Pointed arrow"),
     ("half_arc", "Arc"),
+    ("five_point_star", "Star: 5 points"),
+    ("six_point_star", "Star: 6 points"),
+    ("four_point_star", "Star: 4 points"),
     ("multi_point_star", "Multipoint star"),
     ("speech_bubble", "Speech bubble"),
     ("thought_bubble", "Thought bubble"),
     ("cross", "Cross"),
+    ("check_mark", "Check mark"),
     ("moon", "Moon"),
     ("banner", "Banner"),
+    ("lightning", "Lightning bolt"),
+    ("heart", "Heart"),
 )
 
 # The original labels this control "Line type" and shows icons without
 # names, so these captions are tooltips only.
 LINE_TYPES = (
     ("straight", "Line"),
-    ("curve", "Curve"),
-    ("polygon", "Polygon"),
+    ("curve3", "3-point curve"),
+    ("curve4", "4-point curve"),
+    ("curve5", "5-point curve"),
 )
+
+LINE_POINT_COUNTS = {"straight": 2, "curve3": 3, "curve4": 4, "curve5": 5}
+
+
+def line_points(kind: str, start: tuple[float, float], end: tuple[float, float]) -> list[tuple[float, float]]:
+    """A freshly dragged line: its points spread evenly from start to end."""
+    count = LINE_POINT_COUNTS[kind]
+    return [
+        (start[0] + (end[0] - start[0]) * i / (count - 1), start[1] + (end[1] - start[1]) * i / (count - 1))
+        for i in range(count)
+    ]
 
 CURVE_STEPS = 64
 
@@ -274,9 +286,7 @@ def line_path(kind: str, points: list[tuple[float, float]]) -> list[tuple[float,
         return list(points)
     if kind == "straight":
         return [points[0], points[-1]]
-    if kind == "polygon":
-        return list(points)
-    if kind == "curve":
+    if kind in LINE_POINT_COUNTS:
         return _catmull_rom(points)
     raise ValueError(f"unknown line type: {kind}")
 

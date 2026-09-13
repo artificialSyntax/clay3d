@@ -23,11 +23,11 @@ SHAPE3D_TYPES = (
     ("sphere", "Sphere"),
     ("cylinder", "Cylinder"),
     ("capsule", "Capsule"),
-    ("torus", "Torus"),
+    ("torus", "Doughnut"),
     ("cone", "Cone"),
-    ("pipe", "Pipe"),
+    ("pipe", "Tube"),
     ("hemisphere", "Hemisphere"),
-    ("quarter_torus", "Quarter torus"),
+    ("quarter_torus", "Curved cylinder"),
     ("pyramid", "Pyramid"),
 )
 
@@ -522,7 +522,7 @@ class Scene:
         self.camera = Camera()
         self.show_canvas = True
         self.show_grid = True
-        self.effect = "none"
+        self.effect = "default"
         self.light_rotation = 0.0
         self.canvas_revision = 0
 

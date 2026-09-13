@@ -14,7 +14,6 @@ BRUSH_FLOW = {
     "crayon": 0.45,
     "spray": 0.10,
     "eraser": 1.0,
-    "smudge": 0.55,
 }
 BRUSH_DAB_SPACING = {
     "marker": 0.15,
@@ -26,7 +25,6 @@ BRUSH_DAB_SPACING = {
     "crayon": 0.09,
     "spray": 0.22,
     "eraser": 0.15,
-    "smudge": 0.05,
 }
 
 # ---- 3D primitives ------------------------------------------------------
