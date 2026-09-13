@@ -8,6 +8,7 @@ import os
 import sys
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
@@ -38,7 +39,8 @@ from PySide6.QtWidgets import (
 
 from Clay3D import brushes, chrome, icons, recent, selection, settings, shapes2d
 from Clay3D.canvas2d import Canvas
-from Clay3D.io_files import IMAGE_FILTER, load_image, load_scene, save_image, save_scene
+from Clay3D.io_files import IMAGE_FILTER, load_image, load_scene
+from Clay3D.document import DocumentActions, recovered_projects, recovery_dir
 from Clay3D.editing import EditingTools, TextBox
 from Clay3D.panels import CONTEXT_PANELS, TABS
 from Clay3D.recording import HistoryRecorder, ffmpeg_available
@@ -85,7 +87,7 @@ def _trim_undo(entry: Undo, after: np.ndarray) -> None:
     entry.rect = (x, y, x + width, y + height)
 
 
-class EditorWindow(QMainWindow, EditingTools):
+class EditorWindow(QMainWindow, EditingTools, DocumentActions):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Clay3D")
@@ -124,7 +126,11 @@ class EditorWindow(QMainWindow, EditingTools):
         self.suppress_dialogs = False
 
         self._build()
+        self.init_document()
         self.apply_saved_settings()
+        if recovered_projects():
+            # Work left behind by a session that didn't close cleanly: show it.
+            QTimer.singleShot(0, self.show_recovered_on_launch)
         self.setAcceptDrops(True)
         self.apply_paint_settings()
         self.set_category("Brushes")
@@ -168,6 +174,9 @@ class EditorWindow(QMainWindow, EditingTools):
         self.stack.addWidget(self.save_as_page)
         self.setCentralWidget(self.stack)
         self._install_shortcuts()
+
+    def closeEvent(self, event) -> None:
+        self.handle_close(event)
 
     def dragEnterEvent(self, event) -> None:
         if self.mime_has_image(event.mimeData()):
@@ -223,7 +232,7 @@ class EditorWindow(QMainWindow, EditingTools):
             (QKeySequence.StandardKey.Redo, self.redo),
             (QKeySequence.StandardKey.New, self.new_document),
             (QKeySequence.StandardKey.Open, self.open_file),
-            (QKeySequence.StandardKey.Save, self.save_image_as),
+            (QKeySequence.StandardKey.Save, self.save_document),
             (QKeySequence.StandardKey.Copy, self.copy_selection),
             (QKeySequence.StandardKey.Cut, self.cut_selection),
             (QKeySequence.StandardKey.Paste, self.paste_clipboard),
@@ -534,8 +543,8 @@ class EditorWindow(QMainWindow, EditingTools):
         path, _ = QFileDialog.getSaveFileName(
             self, "Take screenshot", "screenshot.png", "PNG (*.png)"
         )
-        if path:
-            self.stage.grab().save(path)
+        if path and not self.stage.grab().save(path):
+            self.report_save_failure(OSError(f"Could not write {path}"))
 
     def set_show_canvas(self, visible: bool) -> None:
         self.scene.show_canvas = visible
@@ -583,6 +592,7 @@ class EditorWindow(QMainWindow, EditingTools):
             entry.objects = [o.copy() for o in self.scene.objects]
         self._undo.append(entry)
         self._redo.clear()
+        self.mark_unsaved()
         del self._undo[:-UNDO_DEPTH]
         self.refresh_panels()
 
@@ -652,6 +662,7 @@ class EditorWindow(QMainWindow, EditingTools):
         entry = self._undo.pop()
         self._redo.append(self._capture(entry))
         self._restore(entry)
+        self.mark_unsaved()
 
     def redo(self) -> None:
         if self.magic is not None:
@@ -662,6 +673,7 @@ class EditorWindow(QMainWindow, EditingTools):
         entry = self._redo.pop()
         self._undo.append(self._capture(entry))
         self._restore(entry)
+        self.mark_unsaved()
 
     # ---- what the stage asks --------------------------------------------
 
@@ -728,6 +740,8 @@ class EditorWindow(QMainWindow, EditingTools):
         self.stack.setCurrentIndex(0)
 
     def new_document(self) -> None:
+        if not self.confirm_leaving_document():
+            return
         self.push_undo(canvas=True, objects=True)
         self.scene.canvas = Canvas(CANVAS_WIDTH, CANVAS_HEIGHT)
         self.scene.objects = []
@@ -737,6 +751,11 @@ class EditorWindow(QMainWindow, EditingTools):
         self.stage.reload_canvas()
         self.hide_menu()
         self.set_view("2d")
+        self.mark_saved(None)
+
+    def show_recovered_on_launch(self) -> None:
+        self.show_menu()
+        self.show_open_pane()
 
     def show_open_pane(self) -> None:
         self.open_pane.rebuild()
@@ -750,6 +769,11 @@ class EditorWindow(QMainWindow, EditingTools):
             self.open_path(path)
 
     def open_path(self, path: str) -> None:
+        if self.confirm_leaving_document():
+            self.load_document(path)
+
+    def load_document(self, path: str) -> bool:
+        """Replace the document with a file. False (and a message) if it can't be read."""
         try:
             if path.lower().endswith(".clay3d"):
                 scene = load_scene(path)
@@ -759,7 +783,7 @@ class EditorWindow(QMainWindow, EditingTools):
             QMessageBox.information(
                 self, "Can't read that file", "It may be invalid, or in a format we don't support."
             )
-            return
+            return False
         self.push_undo(canvas=True, objects=True)
         if path.lower().endswith(".clay3d"):
             self.scene = scene
@@ -767,10 +791,13 @@ class EditorWindow(QMainWindow, EditingTools):
             self.scene.canvas = canvas
         self.apply_paint_settings()
         self.stage.reload_canvas()
-        recent.remember(path)
         self.hide_menu()
         self.fit_to_window()
         self.refresh_panels()
+        if Path(path).parent != recovery_dir():
+            recent.remember(path)
+            self.mark_saved(path)
+        return True
 
     def print_canvas(self) -> None:
         """Menu > Print > 2D print: the picture, fitted to the page."""
@@ -809,23 +836,20 @@ class EditorWindow(QMainWindow, EditingTools):
 
     def save_image_as(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save image", "artwork.png", "PNG (*.png);;JPEG (*.jpg);;BMP (*.bmp)"
+            self, "Save image", f"{Path(self.document_name()).stem}.png",
+            "PNG (*.png);;JPEG (*.jpg);;BMP (*.bmp)",
         )
         if path:
-            self.clear_selection()
-            save_image(self.canvas, path)
-            recent.remember(path)
-            self.hide_menu()
+            self.write_document(path)
 
     def save_scene_as(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save scene", "artwork.clay3d", "Clay3D scene (*.clay3d)"
+            self, "Save scene", f"{Path(self.document_name()).stem}.clay3d", "Clay3D project (*.clay3d)"
         )
         if path:
-            self.clear_selection()
-            save_scene(self.scene, path)
-            recent.remember(path)
-            self.hide_menu()
+            if not path.lower().endswith(".clay3d"):
+                path += ".clay3d"
+            self.write_document(path)
 
     def export_model(self) -> None:
         from Clay3D.io_files import save_model
@@ -841,8 +865,8 @@ class EditorWindow(QMainWindow, EditingTools):
         if not self.scene.objects:
             QMessageBox.information(self, "Nothing to export", "The scene has no 3D objects.")
             return
-        save_model(self.scene, path)
-        self.hide_menu()
+        if self.write_file(path, lambda temp: save_model(self.scene, temp)):
+            self.hide_menu()
 
     # ---- overlay ---------------------------------------------------------
 

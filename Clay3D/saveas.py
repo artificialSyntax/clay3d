@@ -281,10 +281,21 @@ class SaveAsImagePage(QWidget):
             return
         if not path.lower().endswith(suffix) and not (name == "JPEG" and path.lower().endswith(".jpeg")):
             path += suffix
-        self.write(path)
-        self.editor.close_save_as()
+        if self.write(path):
+            self.editor.close_save_as()
 
-    def write(self, path: str) -> None:
-        with open(path, "wb") as f:
-            f.write(encode_image(self.output_pixels(), self.type_name()))
+    def write(self, path: str) -> bool:
+        data = encode_image(self.output_pixels(), self.type_name())
+
+        def put(temp: str) -> None:
+            with open(temp, "wb") as f:
+                f.write(data)
+
+        if not self.editor.write_file(path, put):
+            return False
         recent.remember(path)
+        canvas = self.editor.canvas
+        if self.output_size() == (canvas.width, canvas.height) and not self.editor.scene.objects:
+            # Nothing was resized away or left out, so this file is the document now.
+            self.editor.mark_saved(path)
+        return True

@@ -350,7 +350,7 @@ def menu_page(editor) -> QWidget:
         ("file-plus", "New", editor.new_document),
         ("folder-open", "Open", lambda: editor.show_open_pane()),
         ("image-plus", "Insert", editor.insert_image),
-        ("save", "Save", editor.save_image_as),
+        ("save", "Save", editor.save_document),
         ("save-all", "Save as", lambda: panes.setCurrentWidget(save_as)),
         ("printer", "Print", lambda: panes.setCurrentWidget(print_pane)),
         ("settings", "Settings", lambda: panes.setCurrentWidget(settings)),
@@ -384,6 +384,11 @@ class OpenPane(QWidget):
         browse.setMaximumWidth(220)
         browse.clicked.connect(lambda checked=False: editor.open_file())
         self.column.addWidget(browse)
+        self.recovered_caption = QLabel("Recovered projects")
+        self.recovered_caption.setProperty("role", "section")
+        self.column.addWidget(self.recovered_caption)
+        self.recovered_holder = QWidget()
+        self.column.addWidget(self.recovered_holder)
         caption = QLabel("Saved projects")
         caption.setProperty("role", "section")
         self.column.addWidget(caption)
@@ -399,19 +404,35 @@ class OpenPane(QWidget):
 
         from Clay3D import recent
 
-        self.grid_holder.setParent(None)
-        self.grid_holder = QWidget()
-        grid = QGridLayout(self.grid_holder)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(12)
+        from Clay3D.document import recovered_projects
+
+        own = self.editor.recovery_path
+        rescued = [str(p) for p in recovered_projects() if p != own]
+        self.recovered_holder = self._replace_grid(
+            self.recovered_holder, rescued, lambda p: self.editor.open_recovered(p), recovered=True
+        )
+        self.recovered_caption.setVisible(bool(rescued))
+        self.recovered_holder.setVisible(bool(rescued))
         files = recent.recent_files()
-        for index, path in enumerate(files):
-            grid.addWidget(self._file_button(path), index // self.COLUMNS, index % self.COLUMNS)
-        grid.setColumnStretch(self.COLUMNS, 1)
-        self.column.insertWidget(3, self.grid_holder)
+        self.grid_holder = self._replace_grid(self.grid_holder, files, self.editor.open_path)
         self.empty.setVisible(not files)
 
-    def _file_button(self, path: str) -> QToolButton:
+    def _replace_grid(self, old: QWidget, paths, open_one, recovered: bool = False) -> QWidget:
+        from PySide6.QtWidgets import QGridLayout
+
+        index = self.column.indexOf(old)
+        old.setParent(None)
+        holder = QWidget()
+        grid = QGridLayout(holder)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(12)
+        for i, path in enumerate(paths):
+            grid.addWidget(self._file_button(path, open_one, recovered), i // self.COLUMNS, i % self.COLUMNS)
+        grid.setColumnStretch(self.COLUMNS, 1)
+        self.column.insertWidget(index, holder)
+        return holder
+
+    def _file_button(self, path: str, open_one, recovered: bool = False) -> QToolButton:
         from pathlib import Path
 
         from PySide6.QtGui import QIcon, QImage, QPixmap
@@ -422,7 +443,7 @@ class OpenPane(QWidget):
         button.setProperty("role", "tile")
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
         button.setFixedSize(132, 140)
-        name = Path(path).name
+        name = self.editor.recovered_age(Path(path)) if recovered else Path(path).name
         button.setText(name if len(name) <= 18 else name[:15] + "...")
         button.setToolTip(path)
         preview = recent.thumbnail(path)
@@ -432,7 +453,7 @@ class OpenPane(QWidget):
                            QImage.Format.Format_RGBA8888).copy()
             button.setIcon(QIcon(QPixmap.fromImage(image)))
             button.setIconSize(QSize(recent.THUMB, recent.THUMB))
-        button.clicked.connect(lambda checked=False, p=path: self.editor.open_path(p))
+        button.clicked.connect(lambda checked=False, p=path: open_one(p))
         return button
 
 
