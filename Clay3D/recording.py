@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from concurrent.futures import Future, ThreadPoolExecutor
 from io import BytesIO
 
 import numpy as np
@@ -21,7 +22,9 @@ MAX_FRAMES = 3000
 class HistoryRecorder:
     def __init__(self):
         self.recording = False
-        self.frames: list[bytes] = []
+        # PNG encoding happens off the UI thread; export waits for it.
+        self.frames: list[Future] = []
+        self._encoder = ThreadPoolExecutor(max_workers=1, thread_name_prefix="clay3d-record")
 
     def start(self) -> None:
         self.recording = True
@@ -33,16 +36,15 @@ class HistoryRecorder:
     def capture(self, pixels: np.ndarray) -> None:
         if not self.recording or len(self.frames) >= MAX_FRAMES:
             return
-        image = _flatten(pixels)
-        image.thumbnail((FRAME_SIDE, FRAME_SIDE), Image.Resampling.BILINEAR)
-        buffer = BytesIO()
-        image.save(buffer, format="PNG", compress_level=1)
-        self.frames.append(buffer.getvalue())
+        # Shrink first (cheap, and a copy the canvas can't change under us),
+        # then flatten and compress the small frame in the background.
+        small = _shrink(pixels)
+        self.frames.append(self._encoder.submit(_encode_frame, small))
 
     def export(self, path: str, final_pixels: np.ndarray) -> str:
         """Write the time-lapse; returns the path actually written (suffix may change)."""
         self.capture_final(final_pixels)
-        frames = [Image.open(BytesIO(data)).convert("RGB") for data in self.frames]
+        frames = [Image.open(BytesIO(frame.result())).convert("RGB") for frame in self.frames]
         if not frames:
             raise ValueError("nothing recorded")
         if path.lower().endswith(".mp4") and shutil.which("ffmpeg"):
@@ -65,6 +67,23 @@ class HistoryRecorder:
 
 def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
+
+
+def _shrink(pixels: np.ndarray) -> np.ndarray:
+    import cv2
+
+    height, width = pixels.shape[:2]
+    k = min(1.0, FRAME_SIDE / max(width, height))
+    if k >= 1.0:
+        return pixels.copy()
+    size = (max(1, round(width * k)), max(1, round(height * k)))
+    return cv2.resize(pixels, size, interpolation=cv2.INTER_AREA)
+
+
+def _encode_frame(pixels: np.ndarray) -> bytes:
+    buffer = BytesIO()
+    _flatten(pixels).save(buffer, format="PNG", compress_level=1)
+    return buffer.getvalue()
 
 
 def _flatten(pixels: np.ndarray) -> Image.Image:

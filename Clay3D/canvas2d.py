@@ -230,20 +230,31 @@ class Canvas:
         x, y = int(x), int(y)
         if not (0 <= x < self.width and 0 <= y < self.height):
             return None
+        import cv2
+
         matches = self._similar_to(self.pixels[y, x])
         if not matches[y, x]:
             return None
-        region = _flood_spans(matches, x, y)
-        if region is None:
-            return None
-        mask, rect = region
+        # Connected run of matching pixels around the seed, 4-neighbour, done in C.
+        region = matches.astype(np.uint8)
+        _, _, _, (rx, ry, rw, rh) = cv2.floodFill(region, None, (x, y), 2, 0, 0, 4)
+        rect = (rx, ry, rx + rw, ry + rh)
+        mask = region[ry:ry + rh, rx:rx + rw] == 2
         _paint_masked(self.pixels, mask, rect, self._color, self._opacity)
         return rect
 
     def _similar_to(self, target: np.ndarray) -> np.ndarray:
+        """Pixels whose summed RGBA distance from target is within tolerance."""
+        import cv2
+
         limit = self.tolerance * 255.0 * 4.0
-        difference = np.abs(self.pixels.astype(np.int16) - target.astype(np.int16))
-        return difference.sum(axis=2) <= limit
+        difference = cv2.absdiff(self.pixels, tuple(float(v) for v in target))
+        # Sum the four channel differences in 16 bits: 4 x 255 overflows 8.
+        channels = cv2.split(difference)
+        total = cv2.add(channels[0], channels[1], dtype=cv2.CV_16U)
+        total = cv2.add(total, channels[2], dtype=cv2.CV_16U)
+        total = cv2.add(total, channels[3], dtype=cv2.CV_16U)
+        return total <= limit
 
     def replace_color(self, target: Color, replacement: Color) -> Rect:
         """Recolor every matching pixel at once, ignoring connectivity."""
@@ -444,12 +455,13 @@ def _paint_masked(pixels: np.ndarray, mask: np.ndarray, rect: Rect, color: Color
     x0, y0, x1, y1 = rect
     patch = pixels[y0:y1, x0:x1]
     alpha = (color[3] / 255.0) * opacity
+    where = mask[:, :, None]
     if alpha >= 0.999:
-        patch[mask] = color
+        np.copyto(patch, np.array(color, dtype=np.uint8), where=where)
         return
-    selected = patch[mask].astype(np.float32)
     source = np.array(color, dtype=np.float32)
-    patch[mask] = np.clip(source * alpha + selected * (1.0 - alpha), 0, 255).astype(np.uint8)
+    blended = np.clip(source * alpha + patch.astype(np.float32) * (1.0 - alpha), 0, 255).astype(np.uint8)
+    np.copyto(patch, blended, where=where)
 
 
 def _run_around(row: np.ndarray, x: int, width: int) -> tuple[int, int]:

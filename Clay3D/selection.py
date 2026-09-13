@@ -47,6 +47,25 @@ class Selection:
         canvas.pixels[y0:y1, x0:x1][local_mask] = canvas.background
         return rect
 
+    def frame(self) -> Rect | None:
+        """Where transformed() will land, worked out without resampling anything.
+
+        Cheap enough to call every frame while a float is dragged; the pixels
+        themselves are only produced when they are stamped or copied.
+        """
+        if self.floating is None:
+            return None
+        height, width = self.floating.shape[:2]
+        scaled_w = max(1, int(round(width * abs(self.scale[0]))))
+        scaled_h = max(1, int(round(height * abs(self.scale[1]))))
+        if abs(self.rotation) > 1e-6:
+            rotated_w, rotated_h = rotated_size(scaled_w, scaled_h, -math.degrees(self.rotation))
+        else:
+            rotated_w, rotated_h = scaled_w, scaled_h
+        x = int(round(self.origin[0] + self.offset[0] - (rotated_w - scaled_w) // 2))
+        y = int(round(self.origin[1] + self.offset[1] - (rotated_h - scaled_h) // 2))
+        return (x, y, x + rotated_w, y + rotated_h)
+
     def transformed(self) -> tuple[np.ndarray, tuple[int, int]] | None:
         """The floating buffer with its move, scale and rotation applied."""
         if self.floating is None:
@@ -91,6 +110,28 @@ class Selection:
     def drop(self) -> None:
         """Abandon a float without stamping it (used when undoing)."""
         self.floating = None
+
+
+def rotated_size(width: int, height: int, degrees: float) -> tuple[int, int]:
+    """Size of Image.rotate(degrees, expand=True) on a width x height image.
+
+    Mirrors Pillow's own arithmetic, corner rounding included, so a frame
+    computed here matches the pixels transformed() produces exactly.
+    """
+    angle = degrees % 360.0
+    if angle in (0.0, 180.0):
+        return width, height
+    if angle in (90.0, 270.0):
+        return height, width
+    radians = -math.radians(angle)
+    a, b = round(math.cos(radians), 15), round(math.sin(radians), 15)
+    d, e = round(-math.sin(radians), 15), round(math.cos(radians), 15)
+    cx, cy = width / 2, height / 2
+    c = a * -cx + b * -cy + cx
+    f = d * -cx + e * -cy + cy
+    xs = [a * x + b * y + c for x, y in ((0, 0), (width, 0), (width, height), (0, height))]
+    ys = [d * x + e * y + f for x, y in ((0, 0), (width, 0), (width, height), (0, height))]
+    return (math.ceil(max(xs)) - math.floor(min(xs)), math.ceil(max(ys)) - math.floor(min(ys)))
 
 
 def _mask_from_blit(canvas, pixels: np.ndarray, x: int, y: int) -> np.ndarray:

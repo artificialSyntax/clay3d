@@ -6,6 +6,8 @@ lock, Dimensions and File size, then Save and Cancel.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 from PySide6.QtCore import QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QImage, QPainter
@@ -31,6 +33,7 @@ from Clay3D.theme import STYLESHEET
 from Clay3D.widgets import heading, rule
 
 CHECKER = 12   # px, transparency checkerboard in the preview
+SIZE_ESTIMATOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="clay3d-filesize")
 
 
 class PreviewArea(QWidget):
@@ -87,6 +90,11 @@ class SaveAsImagePage(QWidget):
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.setInterval(120)
         self._refresh_timer.timeout.connect(self._refresh_preview)
+        # File size comes from a real encode, done off the UI thread.
+        self._size_job = None
+        self._size_poll = QTimer(self)
+        self._size_poll.setInterval(40)
+        self._size_poll.timeout.connect(self._collect_file_size)
 
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
@@ -225,12 +233,41 @@ class SaveAsImagePage(QWidget):
         self._refresh_timer.start()
 
     def _refresh_preview(self) -> None:
-        pixels = self.output_pixels()
-        self.preview.show_pixels(pixels)
-        height, width = pixels.shape[:2]
+        width, height = self.output_size()
         self.dimensions.setText(f"{width} x {height} px")
-        size_kb = max(1, round(len(encode_image(pixels, self.type_name())) / 1024))
-        self.file_size.setText(f"{size_kb} kb")
+        self.preview.show_pixels(self._display_pixels(width, height))
+        self.file_size.setText("...")
+        if self._size_job is not None:
+            self._size_job.cancel()
+        # No copy: the canvas can't change while this page covers the editor.
+        pixels, type_name = self.editor.canvas.pixels, self.type_name()
+        transparent = self.transparency.isChecked() and self.transparency.isEnabled()
+        self._size_job = SIZE_ESTIMATOR.submit(
+            lambda: len(encode_image(export_pixels(pixels, width, height, transparent), type_name))
+        )
+        self._size_poll.start()
+
+    def _display_pixels(self, width: int, height: int) -> np.ndarray:
+        """What the export looks like, at no more than the preview area's size."""
+        import cv2
+
+        ratio = self.devicePixelRatioF()
+        limit = max(64, int(max(self.preview.width(), self.preview.height()) * ratio))
+        k = min(1.0, limit / max(width, height))
+        shown = (max(1, round(width * k)), max(1, round(height * k)))
+        source = self.editor.canvas.pixels
+        small = cv2.resize(source, shown, interpolation=cv2.INTER_AREA)
+        transparent = self.transparency.isChecked() and self.transparency.isEnabled()
+        return export_pixels(small, shown[0], shown[1], transparent)
+
+    def _collect_file_size(self) -> None:
+        job = self._size_job
+        if job is None or not job.done():
+            return
+        self._size_poll.stop()
+        self._size_job = None
+        if not job.cancelled():
+            self.file_size.setText(f"{max(1, round(job.result() / 1024))} kb")
 
     # ---- actions ---------------------------------------------------------------
 

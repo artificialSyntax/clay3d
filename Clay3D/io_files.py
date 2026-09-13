@@ -52,13 +52,18 @@ EXPORT_TYPES = (
 
 def export_pixels(pixels: np.ndarray, width: int, height: int, transparent: bool) -> np.ndarray:
     """The picture as it will be saved: scaled, and flattened on white unless transparent."""
-    image = Image.fromarray(pixels, "RGBA")
-    if image.size != (width, height):
-        image = image.resize((max(1, width), max(1, height)), Image.Resampling.LANCZOS)
-    out = np.array(image)
+    if pixels.shape[:2] != (height, width):
+        image = Image.fromarray(pixels, "RGBA").resize((max(1, width), max(1, height)), Image.Resampling.LANCZOS)
+        out = np.array(image)
+    else:
+        out = pixels.copy()
     if not transparent:
-        alpha = out[:, :, 3:4].astype(np.float32) / 255.0
-        out[:, :, :3] = (out[:, :, :3] * alpha + 255.0 * (1.0 - alpha)).astype(np.uint8)
+        see_through = out[:, :, 3] < 255
+        if see_through.any():   # usually nothing is, and the blend is skipped
+            part = out[see_through]
+            alpha = part[:, 3:4].astype(np.float32) / 255.0
+            part[:, :3] = (part[:, :3] * alpha + 255.0 * (1.0 - alpha)).astype(np.uint8)
+            out[see_through] = part
         out[:, :, 3] = 255
     return out
 

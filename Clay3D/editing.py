@@ -683,11 +683,7 @@ class EditingTools:
         bounds = self.selection.bounds
         if bounds is None:
             return None
-        placed = self.selection.transformed()
-        if placed is not None:
-            pixels, (x, y) = placed
-            return (x, y, x + pixels.shape[1], y + pixels.shape[0])
-        return bounds
+        return self.selection.frame() or bounds
 
     def selection_handles(self) -> dict[str, tuple[float, float]]:
         frame = self.selection_frame()

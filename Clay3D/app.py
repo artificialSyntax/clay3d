@@ -6,6 +6,7 @@ import argparse
 import math
 import os
 import sys
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -52,13 +53,36 @@ CANVAS_WIDTH, CANVAS_HEIGHT = CANVAS_DEFAULT_SIZE
 
 @dataclass
 class Undo:
-    """One reversible step. Only the parts a step touched are captured."""
+    """One reversible step. Only the parts a step touched are captured.
+
+    pixels starts as a full canvas copy. Once the next step is pushed, a
+    background thread shrinks it to the rectangle that step changed
+    (rect is then set), which is all an undo needs to put back.
+    """
 
     pixels: np.ndarray | None = None
     size: tuple[int, int] | None = None
     objects: list | None = None
     selected: int = -1
     background: tuple = (255, 255, 255, 255)
+    rect: tuple[int, int, int, int] | None = None
+    trimming: Future | None = None
+
+
+UNDO_TRIMMER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="clay3d-undo")
+
+
+def _trim_undo(entry: Undo, after: np.ndarray) -> None:
+    """Keep only the part of entry.pixels that differs from the state after it."""
+    import cv2
+
+    difference = cv2.absdiff(entry.pixels, after)
+    changed = difference[:, :, 0]
+    for channel in range(1, 4):
+        changed = cv2.bitwise_or(changed, difference[:, :, channel])
+    x, y, width, height = cv2.boundingRect(changed)
+    entry.pixels = entry.pixels[y:y + height, x:x + width].copy()
+    entry.rect = (x, y, x + width, y + height)
 
 
 class EditorWindow(QMainWindow, EditingTools):
@@ -554,12 +578,24 @@ class EditorWindow(QMainWindow, EditingTools):
         if canvas:
             entry.pixels = self.canvas.pixels.copy()
             entry.size = (self.canvas.width, self.canvas.height)
+            self._trim_previous_undo(entry)
         if objects:
             entry.objects = [o.copy() for o in self.scene.objects]
         self._undo.append(entry)
         self._redo.clear()
         del self._undo[:-UNDO_DEPTH]
         self.refresh_panels()
+
+    def _trim_previous_undo(self, entry: Undo) -> None:
+        """The step before this one is finished: shrink its snapshot in the background."""
+        if not self._undo:
+            return
+        previous = self._undo[-1]
+        if previous.pixels is None or previous.rect is not None or previous.trimming is not None:
+            return
+        if previous.size != entry.size:
+            return  # a resize in between; the full copy is the only thing that restores it
+        previous.trimming = UNDO_TRIMMER.submit(_trim_undo, previous, entry.pixels)
 
     def _capture(self, like: Undo) -> Undo:
         entry = Undo(selected=self.scene.selected_index, background=self.canvas.background)
@@ -571,7 +607,16 @@ class EditorWindow(QMainWindow, EditingTools):
         return entry
 
     def _restore(self, entry: Undo) -> None:
-        if entry.pixels is not None:
+        if entry.trimming is not None:
+            entry.trimming.result()
+        if entry.pixels is not None and entry.rect is not None:
+            # A trimmed step: the canvas already matches everything outside rect.
+            x0, y0, x1, y1 = entry.rect
+            self.canvas.pixels[y0:y1, x0:x1] = entry.pixels
+            self.canvas.background = entry.background
+            if x1 > x0 and y1 > y0:
+                self.stage.mark_canvas_dirty(entry.rect)
+        elif entry.pixels is not None:
             self.canvas.width, self.canvas.height = entry.size
             self.canvas.pixels = entry.pixels.copy()
             self.canvas.background = entry.background
@@ -892,22 +937,51 @@ class EditorWindow(QMainWindow, EditingTools):
         painter.drawPolyline(polygon)
 
     def _draw_floating_selection(self, painter: QPainter, stage: Stage) -> None:
-        if self.selection is None or self.selection.floating is None:
+        """Draw the float through the painter's transform, from a cached preview.
+
+        Resampling the full image every frame made dragging a large paste
+        crawl; the exact pixels are only produced when it is stamped.
+        """
+        selection = self.selection
+        if selection is None or selection.floating is None:
             return
-        placed = self.selection.transformed()
-        if placed is None:
+        frame = selection.frame()
+        centre = stage.canvas_to_screen((frame[0] + frame[2]) / 2, (frame[1] + frame[3]) / 2)
+        if centre is None:
             return
-        pixels, (x, y) = placed
-        top_left = stage.canvas_to_screen(x, y)
-        bottom_right = stage.canvas_to_screen(x + pixels.shape[1], y + pixels.shape[0])
-        if top_left is None or bottom_right is None:
-            return
-        image = QImage(
-            np.ascontiguousarray(pixels).tobytes(),
-            pixels.shape[1], pixels.shape[0], pixels.shape[1] * 4,
-            QImage.Format.Format_RGBA8888,
-        )
-        painter.drawImage(QRectF(top_left, bottom_right), image)
+        height, width = selection.floating.shape[:2]
+        scale_x = stage.canvas_scale() * selection.scale[0]
+        scale_y = stage.canvas_scale() * selection.scale[1]
+        image = self._float_preview(selection.floating, max(abs(scale_x), abs(scale_y)))
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.translate(centre)
+        painter.rotate(math.degrees(selection.rotation))
+        painter.scale(scale_x, scale_y)
+        painter.drawImage(QRectF(-width / 2, -height / 2, width, height), image)
+        painter.restore()
+
+    def _float_preview(self, floating: np.ndarray, screen_scale: float) -> QImage:
+        """The float as a QImage, halved until it is no bigger than it shows."""
+        cache = getattr(self, "_float_cache", None)
+        if cache is None or cache["array"] is not floating:
+            height, width = floating.shape[:2]
+            full = QImage(
+                np.ascontiguousarray(floating).tobytes(), width, height, width * 4,
+                QImage.Format.Format_RGBA8888,
+            ).copy()
+            cache = {"array": floating, "levels": {1: full}}
+            self._float_cache = cache
+        level = 1
+        while level * 2 * screen_scale <= 1.0 and level < 64:
+            level *= 2
+        if level not in cache["levels"]:
+            full = cache["levels"][1]
+            cache["levels"][level] = full.scaled(
+                max(1, full.width() // level), max(1, full.height() // level),
+                Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation,
+            )
+        return cache["levels"][level]
 
     def _draw_text_box(self, painter: QPainter, stage: Stage) -> None:
         box = self.text_box
